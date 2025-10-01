@@ -1,40 +1,76 @@
-# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
-# SPDX-License-Identifier: Apache-2.0
-
 import cocotb
-from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import RisingEdge, Timer
 
+CLK_PERIOD_NS = 20  # 50 MHz equivalent
 
-@cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
-
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
-
-    # Reset
-    dut._log.info("Reset")
-    dut.ena.value = 1
+async def reset(dut):
+    dut.rst_n.value = 0
+    dut.ena.value   = 1
+    dut.clk.value   = 0
     dut.ui_in.value = 0
     dut.uio_in.value = 0
-    dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
+    await Timer(CLK_PERIOD_NS//2, units="ns")
     dut.rst_n.value = 1
+    # give a couple cycles to settle
+    for _ in range(2):
+        await RisingEdge(dut.clk)
 
-    dut._log.info("Test project behavior")
+async def tick(dut, n=1):
+    for _ in range(n):
+        dut.clk.value = 0
+        await Timer(CLK_PERIOD_NS//2, units="ns")
+        dut.clk.value = 1
+        await Timer(CLK_PERIOD_NS//2, units="ns")
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+@cocotb.test()
+async def test_counter_load_count_and_tristate(dut):
+    """Verify async reset, synchronous load, counting, and tri-state outputs."""
+    await reset(dut)
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
+    # After reset, counter should be 0; outputs masked when ena=1
+    assert int(dut.uo_out.value) == 0, "After reset, uo_out must be 0"
+    assert int(dut.uio_oe.value) == 0, "After reset, uio_oe should be 0 (tri-stated)"
+    assert int(dut.uio_out.value) == 0, "After reset, uio_out forced 0 when tri-stated"
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+    # ---- Synchronous LOAD ----
+    load_val = 0xA5
+    dut.ui_in.value = load_val
+    # uio_in bits: [2]=OE, [1]=CNT_EN, [0]=LOAD
+    dut.uio_in.value = 0b001  # LOAD=1
+    await tick(dut, 1)        # capture on rising edge
+    dut.uio_in.value = 0      # deassert load
+    assert int(dut.uo_out.value) == load_val, "Counter must load ui_in on LOAD"
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    # ---- Counting ----
+    dut.uio_in.value = 0b010  # CNT_EN=1
+    await tick(dut, 5)        # count 5 cycles
+    dut.uio_in.value = 0
+    expected = (load_val + 5) & 0xFF
+    assert int(dut.uo_out.value) == expected, "Counter must increment when CNT_EN=1"
+
+    # ---- Tri-state behavior on uio_* ----
+    # With OE=0 -> uio_oe must be 0; bus tri-stated. (Value is don't-care but forced 0 in sim)
+    assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when OE=0"
+    assert int(dut.uio_out.value) == 0, "uio_out is forced 0 when not enabled"
+
+    # Enable OE and check that uio_out mirrors counter and OE is driven
+    dut.uio_in.value = 0b100  # OE=1
+    await tick(dut, 1)
+    assert int(dut.uio_oe.value) == 0xFF, "uio_oe must enable all bits when OE=1 and ena=1"
+    assert int(dut.uio_out.value) == expected, "uio_out must mirror counter when OE=1"
+
+    # ---- Verify hold when ena=0 ----
+    dut.ena.value = 0
+    prev = int(dut.uo_out.value)
+    dut.uio_in.value = 0b010  # try to count, but ena=0 => should hold
+    await tick(dut, 3)
+    assert int(dut.uo_out.value) == prev, "Counter must hold when ena=0"
+    assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when ena=0"
+    assert int(dut.uio_out.value) == 0, "uio_out forced 0 when ena=0"
+
+    # Re-enable and ensure counting resumes
+    dut.ena.value = 1
+    dut.uio_in.value = 0b010  # CNT_EN=1
+    await tick(dut, 2)
+    final = (prev + 2) & 0xFF
+    assert int(dut.uo_out.value) == final, "Counting should resume when ena=1"
