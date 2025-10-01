@@ -1,34 +1,24 @@
-// - async active-low reset (rst_n)
-// - sync load from ui_in when LOAD=1
-// - count enable CNT_EN
-// - tri-state bus on uio_* via OE
-// Control pins on uio_in:
-//   uio_in[0] = LOAD
-//   uio_in[1] = CNT_EN
-//   uio_in[2] = OE
-
 `default_nettype none
-
 module tt_um_example (
-    input  wire [7:0] ui_in,   // load data
-    output wire [7:0] uo_out,  // counter value (only when ena=1)
-    input  wire [7:0] uio_in,  // control pins (LOAD,CNT_EN,OE)
-    output wire [7:0] uio_out, // tri-state data bus
-    output wire [7:0] uio_oe,  // tri-state enables
-    input  wire       ena,     // fabric enable
-    input  wire       clk,     // clock
-    input  wire       rst_n    // async active-low reset
+    input  wire [7:0] ui_in,
+    output wire [7:0] uo_out,
+    input  wire [7:0] uio_in,
+    output wire [7:0] uio_out,
+    output wire [7:0] uio_oe,
+    input  wire       ena,
+    input  wire       clk,
+    input  wire       rst_n
 );
 
-    // controls
+    // Controls
     wire load   = uio_in[0];
     wire cnt_en = uio_in[1];
     wire oe     = uio_in[2];
 
-    // counter
+    // Counter register
     reg [7:0] cnt;
 
-    // Asynchronous reset, synchronous load/count gated by ena
+    // **Async reset**; sync load/count only when ena==1
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             cnt <= 8'h00;
@@ -37,14 +27,13 @@ module tt_um_example (
             else if (cnt_en) cnt <= cnt + 8'h01;
             // else hold
         end
-        // if ena==0: hold
     end
 
-    // Outputs: gate by ena; tri-state enables by (ena & oe)
+    // Outputs:
+    // - Primary outputs forced to 0 when ena==0
+    // - Tri-state bus enabled only when (ena && oe). When not enabled, drive 0 and set OE low.
     assign uo_out = ena ? cnt : 8'h00;
-    assign uio_out = ena ? cnt : 8'h00;
+    assign uio_out = ena ? cnt : 8'h00;   // <-- DO NOT tie to ui_in
     assign uio_oe  = (ena && oe) ? 8'hFF : 8'h00;
-
 endmodule
-
 `default_nettype wire
