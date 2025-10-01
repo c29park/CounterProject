@@ -5,10 +5,13 @@ CLK_PERIOD_NS = 20  # 50 MHz
 
 async def tick(dut, label="", n=1):
     for i in range(n):
+        # falling half
         dut.clk.value = 0
-        await Timer(CLK_PERIOD_NS // 2, units="ns")
+        await Timer(CLK_PERIOD_NS // 2, unit="ns")
+        # rising half
         dut.clk.value = 1
-        await Timer(CLK_PERIOD_NS // 2, units="ns")
+        await Timer(CLK_PERIOD_NS // 2, unit="ns")
+        # helpful logs each cycle
         cocotb.log.info(
             f"{label} cycle {i+1}: rst_n={int(dut.rst_n.value)} ena={int(dut.ena.value)} "
             f"ui_in=0x{int(dut.ui_in.value):02X} uio_in=0b{int(dut.uio_in.value):08b} "
@@ -16,16 +19,19 @@ async def tick(dut, label="", n=1):
             f"uio_oe=0x{int(dut.uio_oe.value):02X}"
         )
 
+# Backward-compatible alias (the NameError you saw)
+clock_ticks = tick
+
 async def reset_and_enable(dut):
-    # Safe defaults first, then assert reset for 2 full cycles
+    # Safe defaults
     dut.ena.value    = 1
     dut.ui_in.value  = 0
     dut.uio_in.value = 0
     dut.clk.value    = 0
+    # Assert async reset for two full cycles
     dut.rst_n.value  = 0
     await tick(dut, "RESET", 2)
-
-    # Release reset and wait 2 more cycles before sampling
+    # Release reset and wait two cycles
     dut.rst_n.value  = 1
     await tick(dut, "POST-RESET", 2)
 
@@ -69,13 +75,13 @@ async def test_counter_core_behaviors(dut):
     assert int(dut.uio_oe.value) == 0xFF, "uio_oe should enable all bits when OE=1"
     assert int(dut.uio_out.value) == expected, "uio_out should mirror counter when OE=1"
 
-    # ---------- Disable fabric (ena=0): counter holds internally, outputs masked ----------
+    # ---------- Disable fabric (ena=0): counter holds internally; outputs masked ----------
     dut.ena.value    = 0
-    prev = int(dut.uo_out.value)   # store visible value before masking
-    dut.uio_in.value = 0b010       # try to count; internal reg should hold, but outputs must be 0
-    await clock_ticks(dut, 3)
+    prev = int(dut.uo_out.value)  # capture the visible value before masking
+    dut.uio_in.value = 0b010      # try to count; should have no effect while ena=0
+    await tick(dut, "ENA=0", 3)
 
-    # Outputs must be masked when ena=0
+    # Outputs must be masked while ena=0
     assert int(dut.uo_out.value) == 0, "uo_out must be 0 when ena=0 (outputs masked)"
     assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when ena=0"
     assert int(dut.uio_out.value) == 0, "uio_out forced 0 when ena=0"
@@ -83,7 +89,8 @@ async def test_counter_core_behaviors(dut):
     # Re-enable and ensure counting resumes from the held internal value
     dut.ena.value    = 1
     dut.uio_in.value = 0b010  # CNT_EN=1
-    await clock_ticks(dut, 2)
+    await tick(dut, "RESUME", 2)
     dut.uio_in.value = 0
     assert int(dut.uo_out.value) == ((prev + 2) & 0xFF), "Counting should resume when ena=1"
 
+    cocotb.log.info("=== END TEST (PASS) ===")
