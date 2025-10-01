@@ -1,71 +1,49 @@
-// 8-bit programmable binary counter 
-// - Asynchronous active-low reset (rst_n)
-// - Synchronous load from ui_in when LOAD=1
-// - Count enable (CNT_EN)
-// - Tri-state outputs on uio_* controlled by OE
-//
-// Pin map (TinyTapeout wrapper):
-//   ui_in[7:0]   : LOAD DATA (preset value)
-//   uio_in[0]    : LOAD  (1 => load ui_in on next rising edge)
-//   uio_in[1]    : CNT_EN (1 => increment on rising edge)
-//   uio_in[2]    : OE (1 => drive uio_out; 0 => tri-state)
-//   others       : don't care
-//
-// Outputs:
-//   uo_out[7:0]  : counter value, driven only when ena=1 (else 0)
-//   uio_out[7:0] : counter value (same), gated by OE; tri-stated when OE=0
-//   uio_oe[7:0]  : {8{OE}} when ena=1, else 0
-//
-// Behavior when ena=0:
-//   - Counter holds its value (no counting, no loading)
-//   - uo_out forced to 0
-//   - uio_oe forced to 0 (tri-state), uio_out forced to 0
+// - async active-low reset (rst_n)
+// - sync load from ui_in when LOAD=1
+// - count enable CNT_EN
+// - tri-state bus on uio_* via OE
+// Control pins on uio_in:
+//   uio_in[0] = LOAD
+//   uio_in[1] = CNT_EN
+//   uio_in[2] = OE
 
 `default_nettype none
 
-module tt_um_prog_counter (
+module tt_um_example (
     input  wire [7:0] ui_in,   // load data
-    output wire [7:0] uo_out,  // counter value (driven only when ena=1)
-    input  wire [7:0] uio_in,  // control signals
-    output wire [7:0] uio_out, // counter value (tri-state via uio_oe)
+    output wire [7:0] uo_out,  // counter value (only when ena=1)
+    input  wire [7:0] uio_in,  // control pins (LOAD,CNT_EN,OE)
+    output wire [7:0] uio_out, // tri-state data bus
     output wire [7:0] uio_oe,  // tri-state enables
-    input  wire       ena,     // fabric enable from TinyTapeout
+    input  wire       ena,     // fabric enable
     input  wire       clk,     // clock
     input  wire       rst_n    // async active-low reset
 );
 
-    // Control signals
+    // controls
     wire load   = uio_in[0];
     wire cnt_en = uio_in[1];
     wire oe     = uio_in[2];
 
-    // 8-bit counter register
+    // counter
     reg [7:0] cnt;
 
-    // Asynchronous reset, synchronous behaviors gated by `ena`
+    // Asynchronous reset, synchronous load/count gated by ena
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             cnt <= 8'h00;
         end else if (ena) begin
-            if (load) begin
-                cnt <= ui_in;
-            end else if (cnt_en) begin
-                cnt <= cnt + 8'h01;
-            end
+            if (load)      cnt <= ui_in;
+            else if (cnt_en) cnt <= cnt + 8'h01;
             // else hold
         end
-        // If ena==0: hold value; outputs are separately gated below.
+        // if ena==0: hold
     end
 
-    // Output gating per TinyTapeout convention
-    wire [7:0] visible = cnt;
-
-    // Primary outputs: only drive when ena=1
-    assign uo_out = ena ? visible : 8'h00;
-
-    // Tri-state bus: drive value on uio_out, but only enabled when (ena && oe)
-    assign uio_out = ena ? visible : 8'h00;
-    assign uio_oe  = ena ? {8{oe}} : 8'h00;
+    // Outputs: gate by ena; tri-state enables by (ena & oe)
+    assign uo_out = ena ? cnt : 8'h00;
+    assign uio_out = ena ? cnt : 8'h00;
+    assign uio_oe  = (ena && oe) ? 8'hFF : 8'h00;
 
 endmodule
 
