@@ -69,22 +69,21 @@ async def test_counter_core_behaviors(dut):
     assert int(dut.uio_oe.value) == 0xFF, "uio_oe should enable all bits when OE=1"
     assert int(dut.uio_out.value) == expected, "uio_out should mirror counter when OE=1"
 
-    # ---------- Disable fabric (ena=0): hold & tri-state ----------
-    dut.ena.value = 0
-    prev = int(dut.uo_out.value)
-    dut.uio_in.value = 0b010
-    cocotb.log.info("Disabling ena=0; trying to count for 3 cycles (should hold)")
-    await tick(dut, "ENA=0", 3)
-    assert int(dut.uo_out.value) == prev, "Counter must hold when ena=0"
+    # ---------- Disable fabric (ena=0): counter holds internally, outputs masked ----------
+    dut.ena.value    = 0
+    prev = int(dut.uo_out.value)   # store visible value before masking
+    dut.uio_in.value = 0b010       # try to count; internal reg should hold, but outputs must be 0
+    await clock_ticks(dut, 3)
+
+    # Outputs must be masked when ena=0
+    assert int(dut.uo_out.value) == 0, "uo_out must be 0 when ena=0 (outputs masked)"
     assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when ena=0"
     assert int(dut.uio_out.value) == 0, "uio_out forced 0 when ena=0"
 
-    # Re-enable and ensure counting resumes
-    dut.ena.value = 1
-    dut.uio_in.value = 0b010
-    cocotb.log.info("Re-enabling ena=1; count 2 more")
-    await tick(dut, "RESUME", 2)
+    # Re-enable and ensure counting resumes from the held internal value
+    dut.ena.value    = 1
+    dut.uio_in.value = 0b010  # CNT_EN=1
+    await clock_ticks(dut, 2)
     dut.uio_in.value = 0
     assert int(dut.uo_out.value) == ((prev + 2) & 0xFF), "Counting should resume when ena=1"
 
-    cocotb.log.info("=== END TEST (PASS) ===")
