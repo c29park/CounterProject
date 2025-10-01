@@ -1,76 +1,76 @@
 import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
-CLK_PERIOD_NS = 20  # 50 MHz equivalent
+# 50 MHz clock for sim
+CLK_PERIOD_NS = 20
 
-async def reset(dut):
-    dut.rst_n.value = 0
-    dut.ena.value   = 1
-    dut.clk.value   = 0
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
-    await Timer(CLK_PERIOD_NS//2, units="ns")
-    dut.rst_n.value = 1
-    # give a couple cycles to settle
-    for _ in range(2):
-        await RisingEdge(dut.clk)
-
-async def tick(dut, n=1):
+async def clock_ticks(dut, n=1):
     for _ in range(n):
         dut.clk.value = 0
-        await Timer(CLK_PERIOD_NS//2, units="ns")
+        await Timer(CLK_PERIOD_NS // 2, units="ns")
         dut.clk.value = 1
-        await Timer(CLK_PERIOD_NS//2, units="ns")
+        await Timer(CLK_PERIOD_NS // 2, units="ns")
+
+async def reset_and_enable(dut):
+    # Standard TinyTapeout ports
+    dut.ena.value    = 1       # enable fabric during tests
+    dut.ui_in.value  = 0
+    dut.uio_in.value = 0
+    dut.rst_n.value  = 0       # async active-low reset
+    dut.clk.value    = 0
+    await Timer(CLK_PERIOD_NS // 2, units="ns")
+    dut.rst_n.value  = 1
+    # two clean cycles after reset release
+    await clock_ticks(dut, 2)
 
 @cocotb.test()
-async def test_counter_load_count_and_tristate(dut):
-    """Verify async reset, synchronous load, counting, and tri-state outputs."""
-    await reset(dut)
+async def test_counter_core_behaviors(dut):
+    """Async reset, synchronous load, counting, and tri-state I/O."""
+    await reset_and_enable(dut)
 
-    # After reset, counter should be 0; outputs masked when ena=1
-    assert int(dut.uo_out.value) == 0, "After reset, uo_out must be 0"
-    assert int(dut.uio_oe.value) == 0, "After reset, uio_oe should be 0 (tri-stated)"
-    assert int(dut.uio_out.value) == 0, "After reset, uio_out forced 0 when tri-stated"
+    # After reset (ena=1), outputs should be zeroed and tri-stated
+    assert int(dut.uo_out.value) == 0, "uo_out should be 0 after reset"
+    assert int(dut.uio_oe.value) == 0, "uio_oe should be 0 (tri-stated) after reset"
+    assert int(dut.uio_out.value) == 0, "uio_out forced to 0 when not enabled"
 
-    # ---- Synchronous LOAD ----
-    load_val = 0xA5
-    dut.ui_in.value = load_val
-    # uio_in bits: [2]=OE, [1]=CNT_EN, [0]=LOAD
-    dut.uio_in.value = 0b001  # LOAD=1
-    await tick(dut, 1)        # capture on rising edge
-    dut.uio_in.value = 0      # deassert load
-    assert int(dut.uo_out.value) == load_val, "Counter must load ui_in on LOAD"
-
-    # ---- Counting ----
-    dut.uio_in.value = 0b010  # CNT_EN=1
-    await tick(dut, 5)        # count 5 cycles
+    # ---------- Synchronous LOAD ----------
+    load_val = 0x5A
+    dut.ui_in.value  = load_val
+    dut.uio_in.value = 0b001  # LOAD=1 (uio_in[0])
+    await clock_ticks(dut, 1) # capture on rising edge
     dut.uio_in.value = 0
-    expected = (load_val + 5) & 0xFF
-    assert int(dut.uo_out.value) == expected, "Counter must increment when CNT_EN=1"
+    assert int(dut.uo_out.value) == load_val, "LOAD should copy ui_in into counter"
 
-    # ---- Tri-state behavior on uio_* ----
-    # With OE=0 -> uio_oe must be 0; bus tri-stated. (Value is don't-care but forced 0 in sim)
-    assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when OE=0"
-    assert int(dut.uio_out.value) == 0, "uio_out is forced 0 when not enabled"
+    # ---------- Counting ----------
+    dut.uio_in.value = 0b010  # CNT_EN=1 (uio_in[1])
+    await clock_ticks(dut, 7)
+    dut.uio_in.value = 0
+    expected = (load_val + 7) & 0xFF
+    assert int(dut.uo_out.value) == expected, "Counter should increment while CNT_EN=1"
 
-    # Enable OE and check that uio_out mirrors counter and OE is driven
-    dut.uio_in.value = 0b100  # OE=1
-    await tick(dut, 1)
-    assert int(dut.uio_oe.value) == 0xFF, "uio_oe must enable all bits when OE=1 and ena=1"
-    assert int(dut.uio_out.value) == expected, "uio_out must mirror counter when OE=1"
+    # ---------- Tri-state bus ----------
+    # With OE=0, uio_oe must be 0 and uio_out is forced 0 in this design
+    assert int(dut.uio_oe.value) == 0,  "uio_oe must be 0 when OE=0"
+    assert int(dut.uio_out.value) == 0, "uio_out forced 0 when OE=0"
 
-    # ---- Verify hold when ena=0 ----
-    dut.ena.value = 0
+    # Enable OE and verify mirroring on uio_out and enables asserted
+    dut.uio_in.value = 0b100  # OE=1 (uio_in[2])
+    await clock_ticks(dut, 1)
+    assert int(dut.uio_oe.value) == 0xFF, "uio_oe should enable all bits when OE=1"
+    assert int(dut.uio_out.value) == expected, "uio_out should mirror counter when OE=1"
+
+    # ---------- Disable fabric (ena=0): hold & tri-state ----------
+    dut.ena.value    = 0
     prev = int(dut.uo_out.value)
-    dut.uio_in.value = 0b010  # try to count, but ena=0 => should hold
-    await tick(dut, 3)
+    dut.uio_in.value = 0b010  # try to count; should not change
+    await clock_ticks(dut, 3)
     assert int(dut.uo_out.value) == prev, "Counter must hold when ena=0"
     assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when ena=0"
     assert int(dut.uio_out.value) == 0, "uio_out forced 0 when ena=0"
 
     # Re-enable and ensure counting resumes
-    dut.ena.value = 1
+    dut.ena.value    = 1
     dut.uio_in.value = 0b010  # CNT_EN=1
-    await tick(dut, 2)
-    final = (prev + 2) & 0xFF
-    assert int(dut.uo_out.value) == final, "Counting should resume when ena=1"
+    await clock_ticks(dut, 2)
+    dut.uio_in.value = 0
+    assert int(dut.uo_out.value) == ((prev + 2) & 0xFF), "Counting should resume when ena=1"
