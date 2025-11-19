@@ -5,9 +5,9 @@ by a 25&nbsp;MHz clock generates pixel coordinates as well as hsync/vsync pulses
 Each video frame, a 16-bit counter advances and six sine/cosine lookup tables
 produce rotation matrices for the six planes of a tesseract (zw, yw, yz, xw, xz,
 xy). For every pixel the design projects all 16 vertices through two chained
-perspective stages (w and z) and checks whether that pixel falls on one of the
-vertex locations. When it does, the pixel turns bright white; otherwise it stays
-black.
+perspective stages (w and z) and checks whether that pixel falls on the lime
+4D struts, cyan 3D edges, or white vertices. When it does, the pixel lights up
+with the appropriate 2:2:2 RGB color; otherwise it stays black.
 
 ## How to test
 

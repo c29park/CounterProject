@@ -4,8 +4,8 @@
 
 This project repurposes the Tiny Tapeout template into a 25&nbsp;MHz VGA demo that
 projects a spinning 4D hypercube (tesseract). The design synthesizes a full VGA
-sync generator, projects all 16 vertices of the tesseract every pixel, and lights
-each projected vertex with a crisp white dot against a black background.
+sync generator, projects all 16 vertices of the tesseract every pixel, and draws
+cyan edges with lime 4D struts plus white corner dots.
 
 - `uo_out[7:0]` expose `{hsync,B0,G0,R0,vsync,B1,G1,R1}` for a standard VGA PMOD
   style 2:2:2 RGB interface.
@@ -20,10 +20,11 @@ each projected vertex with a crisp white dot against a black background.
    sine/cosine lookup tables so each 4D rotation plane can spin at its own speed
    and phase.
 3. Every pixel evaluates the projected position of all 16 vertices, performs a
-   pair of perspective divides, and checks whether the active pixel lies on one
-   of the hypercube vertices.
-4. During active video the RGB outputs are updated with the vertex dot color;
-   blanking intervals force the outputs to black.
+   pair of perspective divides, and checks whether the active pixel lies on any
+   of the hypercube edges or vertices.
+4. During active video the RGB outputs update with the color-coding rules
+   (vertices → white, w-edges → lime, other edges → cyan); blanking intervals
+   force the outputs to black.
 
 ## Simulating
 
