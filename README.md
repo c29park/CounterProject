@@ -1,42 +1,48 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# VGA Tesseract Demo
 
-- [Read the documentation for project](docs/info.md)
+This project repurposes the Tiny Tapeout template into a 25&nbsp;MHz VGA demo that
+projects a spinning 4D hypercube (tesseract). The design synthesizes a full VGA
+sync generator, projects all 16 vertices of the tesseract every pixel, and colors
+its edges with cyan/lime highlights plus bright vertex dots.
 
-## What is Tiny Tapeout?
+- `uo_out[7:0]` expose `{hsync,B0,G0,R0,vsync,B1,G1,R1}` for a standard VGA PMOD
+  style 2:2:2 RGB interface.
+- `ui_in[7:0]`, `uio_in[7:0]`, and the enable pin are unused; they are tied off
+  internally so the ASIC happily renders whenever `clk` is running.
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+## How it works
 
-To learn more and get started, visit https://tinytapeout.com.
+1. A 640×480@60&nbsp;Hz timing generator produces hsync/vsync pulses and pixel
+   coordinates from a 25&nbsp;MHz clock.
+2. A frame counter advances once per vsync rising edge and feeds six independent
+   sine/cosine lookup tables so each 4D rotation plane can spin at its own speed
+   and phase.
+3. Every pixel evaluates the projected position of all 16 vertices, performs a
+   pair of perspective divides, and checks whether the active pixel lies on one
+   of the hypercube edges or vertices.
+4. During active video the RGB outputs are updated with the edge/dot colors;
+   blanking intervals force the outputs to black.
 
-## Set up your Verilog project
+## Simulating
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+The included cocotb testbench drives the design with a 25&nbsp;MHz clock and
+asserts reset before letting the VGA pipeline run. To reproduce the automated
+checks locally:
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+```bash
+cd test
+make
+```
 
-## Enable GitHub actions to build the results page
+The test ensures that hsync pulses appear, vsync stays high during the first
+frame, and the bidirectional IOs remain tri-stated.
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+## Hardware setup
 
-## Resources
+To view the animation, connect the outputs to a 640×480-compatible VGA DAC or a
+VGA PMOD (e.g. Digilent) and supply a clean 25&nbsp;MHz clock. Only the `uo_out`
+pins are required; all other Tiny Tapeout pins can be left unconnected.
 
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
-
-## What next?
-
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+For more Tiny Tapeout documentation visit https://tinytapeout.com.
