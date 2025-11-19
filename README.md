@@ -19,9 +19,10 @@ cyan edges with lime 4D struts plus white corner dots.
 2. A frame counter advances once per vsync rising edge and feeds six independent
    sine/cosine lookup tables so each 4D rotation plane can spin at its own speed
    and phase.
-3. Every pixel evaluates the projected position of all 16 vertices, performs a
-   pair of perspective divides, and checks whether the active pixel lies on any
-   of the hypercube edges or vertices.
+3. Once per frame the design recalculates and caches the projected positions of
+   all 16 vertices, then every pixel reuses those coordinates to perform a pair
+   of perspective divides and check whether the active pixel lies on any of the
+   hypercube edges or vertices.
 4. During active video the RGB outputs update with the color-coding rules
    (vertices → white, w-edges → lime, other edges → cyan); blanking intervals
    force the outputs to black.

@@ -105,6 +105,18 @@ module tt_um_vga_example(
     end
   end
 
+  // Delay the start of vertex recalculation by one cycle so the new frame
+  // counter value is visible to the projection math.
+  wire start_calc_raw = vsync && !vsync_d;
+  reg  start_calc_pending;
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+      start_calc_pending <= 1'b0;
+    else
+      start_calc_pending <= start_calc_raw;
+  end
+
   // Angles for all six planes.
   // We'll tap different bit slices of frame_ctr for different speeds.
   wire [5:0] ang_zw = frame_ctr[ROT_SPEED_SEL_ZW +: 6] + PHASE_ZW;
@@ -419,25 +431,50 @@ module tt_um_vga_example(
   endfunction
 
   // ============================================================
-  // GENERATE ALL 16 PROJECTED VERTICES
-  // (still per pixel eval — this is heavy, but matches your current style)
+  // CACHE ALL 16 PROJECTED VERTICES (ONCE PER FRAME)
   // ============================================================
-  wire [19:0] v0  = project_vertex(4'd0 );
-  wire [19:0] v1  = project_vertex(4'd1 );
-  wire [19:0] v2  = project_vertex(4'd2 );
-  wire [19:0] v3  = project_vertex(4'd3 );
-  wire [19:0] v4  = project_vertex(4'd4 );
-  wire [19:0] v5  = project_vertex(4'd5 );
-  wire [19:0] v6  = project_vertex(4'd6 );
-  wire [19:0] v7  = project_vertex(4'd7 );
-  wire [19:0] v8  = project_vertex(4'd8 );
-  wire [19:0] v9  = project_vertex(4'd9 );
-  wire [19:0] v10 = project_vertex(4'd10);
-  wire [19:0] v11 = project_vertex(4'd11);
-  wire [19:0] v12 = project_vertex(4'd12);
-  wire [19:0] v13 = project_vertex(4'd13);
-  wire [19:0] v14 = project_vertex(4'd14);
-  wire [19:0] v15 = project_vertex(4'd15);
+  reg        vertex_calc_active;
+  reg [3:0]  vertex_idx;
+  reg [19:0] verts [0:15];
+  wire [19:0] vertex_calc_value = project_vertex(vertex_idx);
+
+  integer vi;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      vertex_calc_active <= 1'b0;
+      vertex_idx         <= 4'd0;
+      for (vi = 0; vi < 16; vi = vi + 1)
+        verts[vi] <= 20'd0;
+    end else if (vertex_calc_active) begin
+      verts[vertex_idx] <= vertex_calc_value;
+      if (vertex_idx == 4'd15) begin
+        vertex_calc_active <= 1'b0;
+        vertex_idx         <= 4'd0;
+      end else begin
+        vertex_idx <= vertex_idx + 4'd1;
+      end
+    end else if (start_calc_pending) begin
+      vertex_calc_active <= 1'b1;
+      vertex_idx         <= 4'd0;
+    end
+  end
+
+  wire [19:0] v0  = verts[0 ];
+  wire [19:0] v1  = verts[1 ];
+  wire [19:0] v2  = verts[2 ];
+  wire [19:0] v3  = verts[3 ];
+  wire [19:0] v4  = verts[4 ];
+  wire [19:0] v5  = verts[5 ];
+  wire [19:0] v6  = verts[6 ];
+  wire [19:0] v7  = verts[7 ];
+  wire [19:0] v8  = verts[8 ];
+  wire [19:0] v9  = verts[9 ];
+  wire [19:0] v10 = verts[10];
+  wire [19:0] v11 = verts[11];
+  wire [19:0] v12 = verts[12];
+  wire [19:0] v13 = verts[13];
+  wire [19:0] v14 = verts[14];
+  wire [19:0] v15 = verts[15];
 
   `define VX(v) v[19:10]
   `define VY(v) v[9:0]
