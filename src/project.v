@@ -35,6 +35,7 @@ module tt_um_vga_example(
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
   assign uio_out = 8'h00;
   assign uio_oe  = 8'h00;
+  wire _unused_ok = &{ena, ui_in, uio_in};
 
   // -------------------------------------------------------
   // Animation Timer
