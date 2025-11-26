@@ -12,7 +12,7 @@ module tt_um_vga_example(
 );
 
   // ============================================================
-  // USER TUNABLES
+  // USER TUNABLES (same as your original)
   // ============================================================
 
   // Geometry scale:
@@ -37,14 +37,16 @@ module tt_um_vga_example(
 
   // Plane enable flags (1 = include that rotation plane in the pipeline)
   // Planes correspond to: zw, yw, yz, xw, xz, xy
-  localparam ENABLE_ZW = 1'b0;
+  localparam ENABLE_ZW = 1'b1;
   localparam ENABLE_YW = 1'b1;
-  localparam ENABLE_YZ = 1'b0;
-  localparam ENABLE_XW = 1'b0;
-  localparam ENABLE_XZ = 1'b0;
-  localparam ENABLE_XY = 1'b0;
+  localparam ENABLE_YZ = 1'b1;
+  localparam ENABLE_XW = 1'b1;
+  localparam ENABLE_XZ = 1'b1;
+  localparam ENABLE_XY = 1'b1;
 
   // Spin control:
+  // Each plane gets: which frame_ctr bits feed its angle (speed),
+  // plus an optional PHASE offset into the LUT.
   localparam integer ROT_SPEED_SEL_ZW = 0;
   localparam integer ROT_SPEED_SEL_YW = 0;
   localparam integer ROT_SPEED_SEL_YZ = 0;
@@ -104,7 +106,6 @@ module tt_um_vga_example(
   wire vsync_rise = vsync && !vsync_d;
 
   // Angles for all six planes.
-  // We'll tap different bit slices of frame_ctr for different speeds.
   wire [5:0] ang_zw = frame_ctr[ROT_SPEED_SEL_ZW +: 6] + PHASE_ZW;
   wire [5:0] ang_yw = frame_ctr[ROT_SPEED_SEL_YW +: 6] + PHASE_YW;
   wire [5:0] ang_yz = frame_ctr[ROT_SPEED_SEL_YZ +: 6] + PHASE_YZ;
@@ -112,7 +113,7 @@ module tt_um_vga_example(
   wire [5:0] ang_xz = frame_ctr[ROT_SPEED_SEL_XZ +: 6] + PHASE_XZ;
   wire [5:0] ang_xy = frame_ctr[ROT_SPEED_SEL_XY +: 6] + PHASE_XY;
 
-  // LUT sin/cos for each plane (Q1.7 signed)
+  // LUT sin/cos for each plane (Q1.7 signed) – same as original
   wire signed [7:0] cos_zw_q7, sin_zw_q7;
   wire signed [7:0] cos_yw_q7, sin_yw_q7;
   wire signed [7:0] cos_yz_q7, sin_yz_q7;
@@ -159,46 +160,6 @@ module tt_um_vga_example(
     end
   endfunction
 
-  // ~4px-thick line fill check
-  function line4;
-    input [9:0] px, py;
-    input [9:0] x1, y1, x2, y2;
-    reg signed [10:0] dx, dy;
-    reg signed [10:1] nx_dummy; //unused slice hack to quiet lints
-    reg signed [10:0] nx, ny;
-    reg signed [21:0] area;
-    reg [10:0] adx, ady, maxd;
-    reg [9:0] xmin, xmax, ymin, ymax;
-    reg box_ok;
-    reg signed [21:0] area_abs;
-    reg signed [21:0] thresh;
-    begin
-      dx = $signed({1'b0,x2}) - $signed({1'b0,x1});
-      dy = $signed({1'b0,y2}) - $signed({1'b0,y1});
-      nx = $signed({1'b0,px}) - $signed({1'b0,x1});
-      ny = $signed({1'b0,py}) - $signed({1'b0,y1});
-      nx_dummy = nx[10:1]; // keep tools calm
-      area = dy * nx - dx * ny;
-
-      adx   = abs11(dx);
-      ady   = abs11(dy);
-      maxd  = (adx > ady) ? adx : ady;
-
-      xmin = (x1 < x2) ? x1 : x2;
-      xmax = (x1 < x2) ? x2 : x1;
-      ymin = (y1 < y2) ? y1 : y2;
-      ymax = (y1 < y2) ? y2 : y1;
-
-      box_ok = (px >= xmin-3) && (px <= xmax+3) &&
-               (py >= ymin-3) && (py <= ymax+3);
-
-      area_abs = area[21] ? -area : area;
-      thresh   = {{11{1'b0}}, (maxd<<2)}; // widen ~4px
-
-      line4 = box_ok && (area_abs <= thresh);
-    end
-  endfunction
-
   // tiny diamond point (~3px manhattan radius)
   function dot2;
     input [9:0] px, py;
@@ -235,7 +196,7 @@ module tt_um_vga_example(
   endfunction
 
   // ============================================================
-  // project_vertex
+  // project_vertex: **exact same math as your original**
   // ============================================================
   function [19:0] project_vertex;
     input [3:0] vidx;
@@ -327,7 +288,6 @@ module tt_um_vga_example(
       end
 
       // ---- 3. perspective from W (DEPTH_K_W) ----
-      // clamp w to something ~[-100 .. +100] before 1/(K - w)
       w_clip_q = w_q;
       if (w_clip_q[15]) begin
         w_clip_lite = -9'sd100;
@@ -346,7 +306,7 @@ module tt_um_vga_example(
 
       // s_w_q ~ recip_w_q * GLOBAL_GAIN
       s_w_mul = $signed({1'b0,recip_w_q}) * $signed(GLOBAL_GAIN);
-      s_w_q   = s_w_mul[22:7]; // back to ~Q1.7
+      s_w_q   = s_w_mul[22:7]; // ~Q1.7
 
       // ---- 4. perspective from Z (DEPTH_K_Z) ----
       z_clip_q = z_q;
@@ -390,8 +350,7 @@ module tt_um_vga_example(
   endfunction
 
   // ============================================================
-  // GENERATE ALL 16 PROJECTED VERTICES
-  // Precompute once per frame instead of fully combinational
+  // GENERATE ALL 16 PROJECTED VERTICES (precompute per frame)
   // ============================================================
 
   // Storage for 16 vertices: {x[19:10], y[9:0]}
@@ -425,7 +384,7 @@ module tt_um_vga_example(
     end
   end
 
-  // Wires for convenience, same names as before
+  // Wires for convenience
   wire [19:0] v0  = v_reg[0];
   wire [19:0] v1  = v_reg[1];
   wire [19:0] v2  = v_reg[2];
@@ -447,48 +406,8 @@ module tt_um_vga_example(
   `define VY(v) v[9:0]
 
   // ============================================================
-  // EDGES OF THE TESSERACT
+  // VERTEX DOTS ONLY (no edges)
   // ============================================================
-  wire e_x = line4(pix_x,pix_y, `VX(v0 ),`VY(v0 ), `VX(v1 ),`VY(v1 )) |
-             line4(pix_x,pix_y, `VX(v2 ),`VY(v2 ), `VX(v3 ),`VY(v3 )) |
-             line4(pix_x,pix_y, `VX(v4 ),`VY(v4 ), `VX(v5 ),`VY(v5 )) |
-             line4(pix_x,pix_y, `VX(v6 ),`VY(v6 ), `VX(v7 ),`VY(v7 )) |
-             line4(pix_x,pix_y, `VX(v8 ),`VY(v8 ), `VX(v9 ),`VY(v9 )) |
-             line4(pix_x,pix_y, `VX(v10),`VY(v10), `VX(v11),`VY(v11)) |
-             line4(pix_x,pix_y, `VX(v12),`VY(v12), `VX(v13),`VY(v13)) |
-             line4(pix_x,pix_y, `VX(v14),`VY(v14), `VX(v15),`VY(v15));
-
-  wire e_y = line4(pix_x,pix_y, `VX(v0 ),`VY(v0 ), `VX(v2 ),`VY(v2 )) |
-             line4(pix_x,pix_y, `VX(v1 ),`VY(v1 ), `VX(v3 ),`VY(v3 )) |
-             line4(pix_x,pix_y, `VX(v4 ),`VY(v4 ), `VX(v6 ),`VY(v6 )) |
-             line4(pix_x,pix_y, `VX(v5 ),`VY(v5 ), `VX(v7 ),`VY(v7 )) |
-             line4(pix_x,pix_y, `VX(v8 ),`VY(v8 ), `VX(v10),`VY(v10)) |
-             line4(pix_x,pix_y, `VX(v9 ),`VY(v9 ), `VX(v11),`VY(v11)) |
-             line4(pix_x,pix_y, `VX(v12),`VY(v12), `VX(v14),`VY(v14)) |
-             line4(pix_x,pix_y, `VX(v13),`VY(v13), `VX(v15),`VY(v15));
-
-  wire e_z = line4(pix_x,pix_y, `VX(v0 ),`VY(v0 ), `VX(v4 ),`VY(v4 )) |
-             line4(pix_x,pix_y, `VX(v1 ),`VY(v1 ), `VX(v5 ),`VY(v5 )) |
-             line4(pix_x,pix_y, `VX(v2 ),`VY(v2 ), `VX(v6 ),`VY(v6 )) |
-             line4(pix_x,pix_y, `VX(v3 ),`VY(v3 ), `VX(v7 ),`VY(v7 )) |
-             line4(pix_x,pix_y, `VX(v8 ),`VY(v8 ), `VX(v12),`VY(v12)) |
-             line4(pix_x,pix_y, `VX(v9 ),`VY(v9 ), `VX(v13),`VY(v13)) |
-             line4(pix_x,pix_y, `VX(v10),`VY(v10), `VX(v14),`VY(v14)) |
-             line4(pix_x,pix_y, `VX(v11),`VY(v11), `VX(v15),`VY(v15));
-
-  wire e_w = line4(pix_x,pix_y, `VX(v0 ),`VY(v0 ), `VX(v8 ),`VY(v8 )) |
-             line4(pix_x,pix_y, `VX(v1 ),`VY(v1 ), `VX(v9 ),`VY(v9 )) |
-             line4(pix_x,pix_y, `VX(v2 ),`VY(v2 ), `VX(v10),`VY(v10)) |
-             line4(pix_x,pix_y, `VX(v3 ),`VY(v3 ), `VX(v11),`VY(v11)) |
-             line4(pix_x,pix_y, `VX(v4 ),`VY(v4 ), `VX(v12),`VY(v12)) |
-             line4(pix_x,pix_y, `VX(v5 ),`VY(v5 ), `VX(v13),`VY(v13)) |
-             line4(pix_x,pix_y, `VX(v6 ),`VY(v6 ), `VX(v14),`VY(v14)) |
-             line4(pix_x,pix_y, `VX(v7 ),`VY(v7 ), `VX(v15),`VY(v15));
-
-  wire edge_any   = e_x | e_y | e_z | e_w;
-  wire edge_wonly = e_w; // lime highlight for 4D struts
-
-  // vertex dots = draw all 16 vertices
   wire dot_pix =
     dot2(pix_x,pix_y, `VX(v0 ),`VY(v0 )) |
     dot2(pix_x,pix_y, `VX(v1 ),`VY(v1 )) |
@@ -507,25 +426,12 @@ module tt_um_vga_example(
     dot2(pix_x,pix_y, `VX(v14),`VY(v14)) |
     dot2(pix_x,pix_y, `VX(v15),`VY(v15));
 
-  // Color rules, same as before:
+  // Color rules:
   //   dots        -> white
-  //   w-edges     -> lime (glowy green/yellow)
-  //   other edges -> cyan
   //   background  -> black
-  wire [1:0] R_pix = dot_pix      ? 2'b11 :
-                     edge_wonly   ? 2'b01 :
-                     edge_any     ? 2'b00 :
-                                   2'b00;
-
-  wire [1:0] G_pix = dot_pix      ? 2'b11 :
-                     edge_wonly   ? 2'b11 :
-                     edge_any     ? 2'b11 :
-                                   2'b00;
-
-  wire [1:0] B_pix = dot_pix      ? 2'b11 :
-                     edge_wonly   ? 2'b00 :
-                     edge_any     ? 2'b10 :
-                                   2'b00;
+  wire [1:0] R_pix = dot_pix ? 2'b11 : 2'b00;
+  wire [1:0] G_pix = dot_pix ? 2'b11 : 2'b00;
+  wire [1:0] B_pix = dot_pix ? 2'b11 : 2'b00;
 
   // drive pixel RGB during active video
   always @(posedge clk or negedge rst_n) begin
