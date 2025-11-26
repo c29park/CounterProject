@@ -38,18 +38,13 @@ module tt_um_vga_example(
   // Plane enable flags (1 = include that rotation plane in the pipeline)
   // Planes correspond to: zw, yw, yz, xw, xz, xy
   localparam ENABLE_ZW = 1'b0;
-  localparam ENABLE_YW = 1'b0;
+  localparam ENABLE_YW = 1'b1;
   localparam ENABLE_YZ = 1'b0;
   localparam ENABLE_XW = 1'b0;
   localparam ENABLE_XZ = 1'b0;
   localparam ENABLE_XY = 1'b0;
 
   // Spin control:
-  // Each plane gets: which frame_ctr bits feed its angle (speed),
-  // plus an optional PHASE offset into the LUT.
-  //
-  // Larger ROT_SPEED_SEL_* => slower spin (because we tap higher bits).
-  // PHASE_* just shifts starting angle for that plane.
   localparam integer ROT_SPEED_SEL_ZW = 0;
   localparam integer ROT_SPEED_SEL_YW = 0;
   localparam integer ROT_SPEED_SEL_YZ = 0;
@@ -105,17 +100,8 @@ module tt_um_vga_example(
     end
   end
 
-  // Delay the start of vertex recalculation by one cycle so the new frame
-  // counter value is visible to the projection math.
-  wire start_calc_raw = vsync && !vsync_d;
-  reg  start_calc_pending;
-
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-      start_calc_pending <= 1'b0;
-    else
-      start_calc_pending <= start_calc_raw;
-  end
+  // vsync rising edge (start of frame)
+  wire vsync_rise = vsync && !vsync_d;
 
   // Angles for all six planes.
   // We'll tap different bit slices of frame_ctr for different speeds.
@@ -248,29 +234,8 @@ module tt_um_vga_example(
     end
   endfunction
 
-
   // ============================================================
-  // project_vertex:
-  //
-  // This is the heart. For each vertex index vidx[3:0] we:
-  //   1. create base +/-S0 in x,y,z and +/-WBOOST in w (Q1.7-ish)
-  //   2. apply up to SIX plane rotations in this order:
-  //        zw, yw, yz, xw, xz, xy
-  //      Each plane is:
-  //        [a']   [ cos -sin ] [a]
-  //        [b'] = [ sin  cos ] [b]
-  //      where (a,b) is that plane's coordinate pair.
-  //      Q1.7 * Q1.7 -> Q2.14 -> >>7 back to ~Q1.7
-  //
-  //   3. perspective from W (DEPTH_K_W) and from Z (DEPTH_K_Z)
-  //      using the same style you already had:
-  //        scale_w ~ GLOBAL_GAIN * 1/(DEPTH_K_W - w)
-  //        scale_z ~            1/(DEPTH_K_Z - z)
-  //      combine them, multiply x,y.
-  //
-  //   4. translate to CENTER_X,Y and clamp
-  //
-  // Output is {10-bit x, 10-bit y}.
+  // project_vertex
   // ============================================================
   function [19:0] project_vertex;
     input [3:0] vidx;
@@ -313,12 +278,6 @@ module tt_um_vga_example(
       w_q = vidx[3] ?  (WBOOST <<< 7) : -(WBOOST <<< 7);
 
       // ---- 2. chained 4D rotations ----
-      // Order: zw, yw, yz, xw, xz, xy
-      // For each plane:
-      //   mulA = a*cos - b*sin
-      //   mulB = a*sin + b*cos
-      //   a = mulA>>7; b = mulB>>7
-
       // zw plane (z <-> w)
       if (ENABLE_ZW) begin
         mulA = z_q * cos_zw_q7 - w_q * sin_zw_q7;
@@ -431,57 +390,64 @@ module tt_um_vga_example(
   endfunction
 
   // ============================================================
-  // CACHE ALL 16 PROJECTED VERTICES (ONCE PER FRAME)
+  // GENERATE ALL 16 PROJECTED VERTICES
+  // Precompute once per frame instead of fully combinational
   // ============================================================
-  reg        vertex_calc_active;
-  reg [3:0]  vertex_idx;
-  reg [19:0] verts [0:15];
-  wire [19:0] vertex_calc_value = project_vertex(vertex_idx);
 
-  integer vi;
+  // Storage for 16 vertices: {x[19:10], y[9:0]}
+  reg [19:0] v_reg [0:15];
+  reg [3:0]  v_idx;
+  reg        v_compute;
+
+  integer i;
+
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      vertex_calc_active <= 1'b0;
-      vertex_idx         <= 4'd0;
-      for (vi = 0; vi < 16; vi = vi + 1)
-        verts[vi] <= 20'd0;
-    end else if (vertex_calc_active) begin
-      verts[vertex_idx] <= vertex_calc_value;
-      if (vertex_idx == 4'd15) begin
-        vertex_calc_active <= 1'b0;
-        vertex_idx         <= 4'd0;
-      end else begin
-        vertex_idx <= vertex_idx + 4'd1;
+      v_idx     <= 4'd0;
+      v_compute <= 1'b0;
+      for (i = 0; i < 16; i = i + 1)
+        v_reg[i] <= 20'd0;
+    end else begin
+      // Start a new vertex computation pass at beginning of frame
+      if (vsync_rise) begin
+        v_idx     <= 4'd0;
+        v_compute <= 1'b1;
+      end else if (v_compute) begin
+        // Compute one vertex per clock using shared project_vertex logic
+        v_reg[v_idx] <= project_vertex(v_idx);
+
+        if (v_idx == 4'd15) begin
+          v_compute <= 1'b0;      // done this frame
+        end else begin
+          v_idx <= v_idx + 4'd1;  // next vertex
+        end
       end
-    end else if (start_calc_pending) begin
-      vertex_calc_active <= 1'b1;
-      vertex_idx         <= 4'd0;
     end
   end
 
-  wire [19:0] v0  = verts[0 ];
-  wire [19:0] v1  = verts[1 ];
-  wire [19:0] v2  = verts[2 ];
-  wire [19:0] v3  = verts[3 ];
-  wire [19:0] v4  = verts[4 ];
-  wire [19:0] v5  = verts[5 ];
-  wire [19:0] v6  = verts[6 ];
-  wire [19:0] v7  = verts[7 ];
-  wire [19:0] v8  = verts[8 ];
-  wire [19:0] v9  = verts[9 ];
-  wire [19:0] v10 = verts[10];
-  wire [19:0] v11 = verts[11];
-  wire [19:0] v12 = verts[12];
-  wire [19:0] v13 = verts[13];
-  wire [19:0] v14 = verts[14];
-  wire [19:0] v15 = verts[15];
+  // Wires for convenience, same names as before
+  wire [19:0] v0  = v_reg[0];
+  wire [19:0] v1  = v_reg[1];
+  wire [19:0] v2  = v_reg[2];
+  wire [19:0] v3  = v_reg[3];
+  wire [19:0] v4  = v_reg[4];
+  wire [19:0] v5  = v_reg[5];
+  wire [19:0] v6  = v_reg[6];
+  wire [19:0] v7  = v_reg[7];
+  wire [19:0] v8  = v_reg[8];
+  wire [19:0] v9  = v_reg[9];
+  wire [19:0] v10 = v_reg[10];
+  wire [19:0] v11 = v_reg[11];
+  wire [19:0] v12 = v_reg[12];
+  wire [19:0] v13 = v_reg[13];
+  wire [19:0] v14 = v_reg[14];
+  wire [19:0] v15 = v_reg[15];
 
   `define VX(v) v[19:10]
   `define VY(v) v[9:0]
 
   // ============================================================
   // EDGES OF THE TESSERACT
-  // same as before
   // ============================================================
   wire e_x = line4(pix_x,pix_y, `VX(v0 ),`VY(v0 ), `VX(v1 ),`VY(v1 )) |
              line4(pix_x,pix_y, `VX(v2 ),`VY(v2 ), `VX(v3 ),`VY(v3 )) |
