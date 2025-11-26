@@ -1,585 +1,205 @@
 `default_nettype none
 
-// TinyTapeout VGA Tesseract Demo
-// Option A: fully precomputed vertices in a LUT (16 frames × 16 vertices)
-
 module tt_um_vga_example(
-    input  wire [7:0] ui_in,    // unused
-    output wire [7:0] uo_out,   // {hsync,B0,G0,R0,vsync,B1,G1,R1}
-    input  wire [7:0] uio_in,   // unused
-    output wire [7:0] uio_out,  // unused
-    output wire [7:0] uio_oe,   // unused
-    input  wire       ena,      // unused
-    input  wire       clk,      // ~25 MHz pixel clock
-    input  wire       rst_n     // active-low reset
+  input  wire [7:0] ui_in,    // unused
+  output wire [7:0] uo_out,   // {hsync,B0,G0,R0,vsync,B1,G1,R1}
+  input  wire [7:0] uio_in,   // unused
+  output wire [7:0] uio_out,  // unused
+  output wire [7:0] uio_oe,   // unused
+  input  wire       ena,      // unused
+  input  wire       clk,      // ~25 MHz pixel clock
+  input  wire       rst_n     // active-low reset
 );
 
-  // ============================================================
-  // VGA TIMING
-  // ============================================================
-  wire       hsync;
-  wire       vsync;
-  wire       video_active;
-  wire [9:0] pix_x;
-  wire [9:0] pix_y;
+  // -------------------------------------------------------
+  // VGA signals
+  // -------------------------------------------------------
+  wire hsync;
+  wire vsync;
+  wire activevideo;
+  wire [9:0] x_px;
+  wire [9:0] y_px;
 
-  hvsync_generator hvsync_gen (
-    .clk       (clk),
-    .reset     (~rst_n),
-    .hsync     (hsync),
-    .vsync     (vsync),
-    .display_on(video_active),
-    .hpos      (pix_x),
-    .vpos      (pix_y)
+  hvsync_generator hvsync_gen(
+    .clk        (clk),
+    .reset      (~rst_n),
+    .hsync      (hsync),
+    .vsync      (vsync),
+    .display_on (activevideo),
+    .hpos       (x_px),
+    .vpos       (y_px)
   );
 
-  // VGA PMOD packing (2:2:2 RGB split across the byte)
+  // TinyVGA PMOD mapping
   reg [1:0] R, G, B;
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
+  assign uio_out = 8'h00;
+  assign uio_oe  = 8'h00;
+  wire _unused_ok = &{ena, ui_in, uio_in};
 
-  // Unused IO
-  assign uio_out = 8'b0;
-  assign uio_oe  = 8'b0;
-  wire _unused_ok = &{1'b0, ena, ui_in, uio_in};
-
-  // ============================================================
-  // FRAME COUNTER (drives the LUT)
-  // ============================================================
-  reg       vsync_d;
-  reg [7:0] frame_ctr;    // we only use the lower 4 bits
-
+  // -------------------------------------------------------
+  // Animation Timer
+  // -------------------------------------------------------
+  reg [7:0] frame_cnt;
+  reg vsync_prev;
+  
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      vsync_d   <= 1'b0;
-      frame_ctr <= 8'd0;
+        frame_cnt  <= 8'd0;
+        vsync_prev <= 1'b0;
     end else begin
-      vsync_d <= vsync;
-      // On vsync rising edge => new frame
-      if (vsync && !vsync_d)
-        frame_ctr <= frame_ctr + 8'd1;
+        vsync_prev <= vsync;
+        if (vsync && !vsync_prev) begin
+            frame_cnt <= frame_cnt + 8'd1;
+        end
     end
   end
 
-  wire [3:0] frame = frame_ctr[3:0];  // 0..15
+  // -------------------------------------------------------
+  // Geometry Engine
+  // -------------------------------------------------------
+  
+  // Center screen (320, 240)
+  wire signed [10:0] dx = $signed({1'b0, x_px}) - 11'sd320;
+  wire signed [10:0] dy = $signed({1'b0, y_px}) - 11'sd240;
 
-  // ============================================================
-  // SMALL HELPER: ABS + DIAMOND DOT
-  // ============================================================
+  // 1. Squared Distances
+  wire [21:0] dx_sq = dx * dx;
+  wire [21:0] dy_sq = dy * dy;
 
-  // abs for 11-bit signed
-  function [10:0] abs11;
-    input signed [10:0] v;
-    begin
-      abs11 = v[10] ? (~v + 1'b1) : v;
-    end
-  endfunction
+  // 2. Metrics
+  // Circular (for Shadow and Halo)
+  wire [21:0] r2_circ = dx_sq + dy_sq;
+  // Flat Elliptical (for Belt) - y squashed by 4x (shift left 4 = mult 16)
+  wire [21:0] r2_flat = dx_sq + (dy_sq << 4);
 
-  // ============================================================
-  // 8×8 FONT FOR "U" AND "W" (bitmapped, scaled ×4)
-  // bit 7 = leftmost pixel, bit 0 = rightmost
-  // ============================================================
-  function uw_font_U;
-    input [2:0] cx;  // 0..7
-    input [2:0] cy;  // 0..7
-    reg   [7:0] row;
-    begin
-      case (cy)
-        3'd0: row = 8'b1000_0001;
-        3'd1: row = 8'b1000_0001;
-        3'd2: row = 8'b1000_0001;
-        3'd3: row = 8'b1000_0001;
-        3'd4: row = 8'b1000_0001;
-        3'd5: row = 8'b1000_0001;
-        3'd6: row = 8'b0111_1110;
-        default: row = 8'b0000_0000;
-      endcase
-      uw_font_U = row[7 - cx];
-    end
-  endfunction
+  // -------------------------------------------------------
+  // Constants & Thresholds
+  // -------------------------------------------------------
+  
+  // Shadow Radius
+  localparam SHADOW_R2 = 22'd7225; // r=85
 
-  function uw_font_W;
-    input [2:0] cx;  // 0..7
-    input [2:0] cy;  // 0..7
-    reg   [7:0] row;
-    begin
-      case (cy)
-        3'd0: row = 8'b1000_0001; // outer legs at top
-        3'd1: row = 8'b1000_0001;
-        3'd2: row = 8'b1000_0001;
-        3'd3: row = 8'b1000_0001;
-        3'd4: row = 8'b1001_1001; // inner starts
-        3'd5: row = 8'b1010_0101; // diagonals inwards
-        3'd6: row = 8'b1100_0011; // bottom peaks
-        default: row = 8'b0000_0000;
-      endcase
-      uw_font_W = row[7 - cx];
-    end
-  endfunction
+  // Belt (Front/Back Disk)
+  localparam BELT_IN_R2  = 22'd10000;
+  localparam BELT_OUT_R2 = 22'd85000;
 
-  // tiny diamond point (~3px manhattan radius)
-  function dot2;
-    input [9:0] px, py;
-    input [9:0] cx, cy;
-    reg signed [10:0] dx, dy;
-    reg [10:0] adx, ady;
-    reg [10:0] man;
-    begin
-      dx  = $signed({1'b0, px}) - $signed({1'b0, cx});
-      dy  = $signed({1'b0, py}) - $signed({1'b0, cy});
-      adx = abs11(dx);
-      ady = abs11(dy);
-      man = adx + ady;
-      dot2 = (man <= 11'd3);
-    end
-  endfunction
+  // Halo (Lensed Background)
+  localparam HALO_IN_R2  = 22'd5000;
+  localparam HALO_OUT_R2 = 22'd22000;
 
-  // ============================================================
-  // PRECOMPUTED TESSERACT VERTEX LUT (16 frames × 16 vertices)
-  // Each vertex is {x[19:10], y[9:0]} with 10-bit coordinates
-  // ============================================================
+  // -------------------------------------------------------
+  // Text Generation ("UW")
+  // -------------------------------------------------------
+  // Simple hardcoded shapes for 'U' and 'W'
+  // Position: Top middle. Let's say y from 20 to 52 (32px high).
+  // 'U' width 24, space 8, 'W' width 24. Total width 56.
+  // Start X = 320 - (56/2) = 292.
 
-  reg [19:0] v0,  v1,  v2,  v3;
-  reg [19:0] v4,  v5,  v6,  v7;
-  reg [19:0] v8,  v9,  v10, v11;
-  reg [19:0] v12, v13, v14, v15;
+  // Common Y-box for text
+  wire in_text_y = (y_px >= 10'd20 && y_px < 10'd52);
+  wire [4:0] rel_y = y_px[4:0] - 5'd20; // Relative Y 0-31
+
+  // Letter 'U' Logic (X: 292-315)
+  wire in_u_x = (x_px >= 10'd292 && x_px < 10'd316);
+  // Fixed lint warning: 292 % 32 = 4, so we use 5'd4 instead of 5'd292
+  wire [4:0] u_rel_x = x_px[4:0] - 5'd4; // Relative X 0-23
+  // U shape: left bar OR right bar OR bottom bar
+  wire draw_u = in_text_y && in_u_x && (
+                 (u_rel_x < 5'd4) ||                 // Left bar
+                 (u_rel_x >= 5'd20) ||               // Right bar
+                 (rel_y >= 5'd28)                    // Bottom bar
+                 );
+
+  // Letter 'W' Logic (X: 324-347)
+  wire in_w_x = (x_px >= 10'd324 && x_px < 10'd348);
+  // Fixed lint warning: 324 % 32 = 4, so we use 5'd4 instead of 5'd324
+  wire [4:0] w_rel_x = x_px[4:0] - 5'd4; // Relative X 0-23
+  // W shape: left bar OR right bar OR bottom bar OR middle-bottom bar
+  wire draw_w = in_text_y && in_w_x && (
+                 (w_rel_x < 5'd4) ||                 // Left bar
+                 (w_rel_x >= 5'd20) ||               // Right bar
+                 (rel_y >= 5'd28) ||                 // Bottom bar
+                 ((w_rel_x >= 5'd10 && w_rel_x < 5'd14) && (rel_y >= 5'd16)) // Middle bar (bottom half)
+                 );
+
+  wire draw_text = draw_u || draw_w;
+
+  // -------------------------------------------------------
+  // Rendering Logic
+  // -------------------------------------------------------
+  
+  // Textures (Ring patterns)
+  wire [7:0] belt_tex_val = (r2_flat[15:8]) - frame_cnt;
+  wire belt_gap = belt_tex_val[4];
+  wire belt_yellow = belt_tex_val[2]; 
+  
+  wire [7:0] halo_tex_val = (r2_circ[13:6]) - frame_cnt;
+  wire halo_gap = halo_tex_val[4];
+  wire halo_yellow = halo_tex_val[2];
+
+  // Region Flags
+  wire in_shadow = (r2_circ < SHADOW_R2);
+  wire in_belt   = (r2_flat >= BELT_IN_R2 && r2_flat <= BELT_OUT_R2);
+  wire in_halo   = (r2_circ >= HALO_IN_R2 && r2_circ <= HALO_OUT_R2);
+
+  // "3D" Depth Logic
+  wire belt_is_in_front = (dy > 4); 
 
   always @* begin
-    // ----------------------------------------------------------------
-    // Precomputed tesseract vertices (16 frames × 16 vertices)
-    // Generated by Python script
-    // ----------------------------------------------------------------
-    case (frame)
-      4'd0: begin
-        v0 = {10'd300, 10'd238};
-        v1 = {10'd339, 10'd238};
-        v2 = {10'd286, 10'd283};
-        v3 = {10'd353, 10'd283};
-        v4 = {10'd246, 10'd235};
-        v5 = {10'd393, 10'd235};
-        v6 = {10'd193, 10'd403};
-        v7 = {10'd446, 10'd403};
-        v8 = {10'd289, 10'd200};
-        v9 = {10'd350, 10'd200};
-        v10 = {10'd252, 10'd244};
-        v11 = {10'd387, 10'd244};
-        v12 = {10'd205, 10'd91};
-        v13 = {10'd434, 10'd91};
-        v14 = {10'd63, 10'd256};
-        v15 = {10'd576, 10'd256};
-      end
-      4'd1: begin
-        v0 = {10'd300, 10'd242};
-        v1 = {10'd339, 10'd242};
-        v2 = {10'd286, 10'd285};
-        v3 = {10'd353, 10'd285};
-        v4 = {10'd246, 10'd237};
-        v5 = {10'd393, 10'd237};
-        v6 = {10'd163, 10'd427};
-        v7 = {10'd476, 10'd427};
-        v8 = {10'd294, 10'd209};
-        v9 = {10'd345, 10'd209};
-        v10 = {10'd252, 10'd242};
-        v11 = {10'd387, 10'd242};
-        v12 = {10'd215, 10'd98};
-        v13 = {10'd424, 10'd98};
-        v14 = {10'd63, 10'd209};
-        v15 = {10'd576, 10'd209};
-      end
-      4'd2: begin
-        v0 = {10'd300, 10'd245};
-        v1 = {10'd339, 10'd245};
-        v2 = {10'd283, 10'd291};
-        v3 = {10'd356, 10'd291};
-        v4 = {10'd246, 10'd239};
-        v5 = {10'd393, 10'd239};
-        v6 = {10'd145, 10'd430};
-        v7 = {10'd494, 10'd430};
-        v8 = {10'd296, 10'd214};
-        v9 = {10'd343, 10'd214};
-        v10 = {10'd252, 10'd240};
-        v11 = {10'd387, 10'd240};
-        v12 = {10'd215, 10'd93};
-        v13 = {10'd424, 10'd93};
-        v14 = {10'd63, 10'd162};
-        v15 = {10'd576, 10'd162};
-      end
-      4'd3: begin
-        v0 = {10'd299, 10'd250};
-        v1 = {10'd340, 10'd250};
-        v2 = {10'd275, 10'd303};
-        v3 = {10'd364, 10'd303};
-        v4 = {10'd246, 10'd240};
-        v5 = {10'd393, 10'd240};
-        v6 = {10'd125, 10'd423};
-        v7 = {10'd514, 10'd423};
-        v8 = {10'd299, 10'd220};
-        v9 = {10'd340, 10'd220};
-        v10 = {10'd252, 10'd239};
-        v11 = {10'd387, 10'd239};
-        v12 = {10'd235, 10'd118};
-        v13 = {10'd404, 10'd118};
-        v14 = {10'd95, 10'd129};
-        v15 = {10'd544, 10'd129};
-      end
-      4'd4: begin
-        v0 = {10'd297, 10'd254};
-        v1 = {10'd342, 10'd254};
-        v2 = {10'd266, 10'd316};
-        v3 = {10'd373, 10'd316};
-        v4 = {10'd246, 10'd241};
-        v5 = {10'd393, 10'd241};
-        v6 = {10'd63, 10'd440};
-        v7 = {10'd576, 10'd440};
-        v8 = {10'd300, 10'd224};
-        v9 = {10'd339, 10'd224};
-        v10 = {10'd252, 10'd238};
-        v11 = {10'd387, 10'd238};
-        v12 = {10'd253, 10'd144};
-        v13 = {10'd386, 10'd144};
-        v14 = {10'd127, 10'd111};
-        v15 = {10'd512, 10'd111};
-      end
-      4'd5: begin
-        v0 = {10'd295, 10'd260};
-        v1 = {10'd344, 10'd260};
-        v2 = {10'd255, 10'd331};
-        v3 = {10'd384, 10'd331};
-        v4 = {10'd246, 10'd240};
-        v5 = {10'd393, 10'd240};
-        v6 = {10'd63, 10'd394};
-        v7 = {10'd576, 10'd394};
-        v8 = {10'd300, 10'd228};
-        v9 = {10'd339, 10'd228};
-        v10 = {10'd252, 10'd239};
-        v11 = {10'd387, 10'd239};
-        v12 = {10'd264, 10'd160};
-        v13 = {10'd375, 10'd160};
-        v14 = {10'd148, 10'd97};
-        v15 = {10'd491, 10'd97};
-      end
-      4'd6: begin
-        v0 = {10'd293, 10'd265};
-        v1 = {10'd346, 10'd265};
-        v2 = {10'd240, 10'd349};
-        v3 = {10'd399, 10'd349};
-        v4 = {10'd246, 10'd240};
-        v5 = {10'd393, 10'd240};
-        v6 = {10'd63, 10'd343};
-        v7 = {10'd576, 10'd343};
-        v8 = {10'd300, 10'd232};
-        v9 = {10'd339, 10'd232};
-        v10 = {10'd252, 10'd239};
-        v11 = {10'd387, 10'd239};
-        v12 = {10'd273, 10'd175};
-        v13 = {10'd366, 10'd175};
-        v14 = {10'd166, 10'd88};
-        v15 = {10'd473, 10'd88};
-      end
-      4'd7: begin
-        v0 = {10'd288, 10'd275};
-        v1 = {10'd351, 10'd275};
-        v2 = {10'd208, 10'd386};
-        v3 = {10'd431, 10'd386};
-        v4 = {10'd246, 10'd240};
-        v5 = {10'd393, 10'd240};
-        v6 = {10'd63, 10'd292};
-        v7 = {10'd576, 10'd292};
-        v8 = {10'd300, 10'd236};
-        v9 = {10'd339, 10'd236};
-        v10 = {10'd252, 10'd239};
-        v11 = {10'd387, 10'd239};
-        v12 = {10'd280, 10'd188};
-        v13 = {10'd359, 10'd188};
-        v14 = {10'd182, 10'd87};
-        v15 = {10'd457, 10'd87};
-      end
-      4'd8: begin
-        v0 = {10'd284, 10'd283};
-        v1 = {10'd355, 10'd283};
-        v2 = {10'd196, 10'd392};
-        v3 = {10'd443, 10'd392};
-        v4 = {10'd246, 10'd240};
-        v5 = {10'd393, 10'd240};
-        v6 = {10'd63, 10'd240};
-        v7 = {10'd576, 10'd240};
-        v8 = {10'd300, 10'd240};
-        v9 = {10'd339, 10'd240};
-        v10 = {10'd252, 10'd240};
-        v11 = {10'd387, 10'd240};
-        v12 = {10'd284, 10'd196};
-        v13 = {10'd355, 10'd196};
-        v14 = {10'd196, 10'd87};
-        v15 = {10'd443, 10'd87};
-      end
-      4'd9: begin
-        v0 = {10'd280, 10'd291};
-        v1 = {10'd359, 10'd291};
-        v2 = {10'd182, 10'd392};
-        v3 = {10'd457, 10'd392};
-        v4 = {10'd246, 10'd239};
-        v5 = {10'd393, 10'd239};
-        v6 = {10'd63, 10'd187};
-        v7 = {10'd576, 10'd187};
-        v8 = {10'd300, 10'd243};
-        v9 = {10'd339, 10'd243};
-        v10 = {10'd252, 10'd240};
-        v11 = {10'd387, 10'd240};
-        v12 = {10'd288, 10'd204};
-        v13 = {10'd351, 10'd204};
-        v14 = {10'd208, 10'd93};
-        v15 = {10'd431, 10'd93};
-      end
-      4'd10: begin
-        v0 = {10'd273, 10'd304};
-        v1 = {10'd366, 10'd304};
-        v2 = {10'd166, 10'd391};
-        v3 = {10'd473, 10'd391};
-        v4 = {10'd246, 10'd239};
-        v5 = {10'd393, 10'd239};
-        v6 = {10'd63, 10'd136};
-        v7 = {10'd576, 10'd136};
-        v8 = {10'd300, 10'd247};
-        v9 = {10'd339, 10'd247};
-        v10 = {10'd252, 10'd240};
-        v11 = {10'd387, 10'd240};
-        v12 = {10'd293, 10'd214};
-        v13 = {10'd346, 10'd214};
-        v14 = {10'd240, 10'd130};
-        v15 = {10'd399, 10'd130};
-      end
-      4'd11: begin
-        v0 = {10'd264, 10'd319};
-        v1 = {10'd375, 10'd319};
-        v2 = {10'd148, 10'd382};
-        v3 = {10'd491, 10'd382};
-        v4 = {10'd246, 10'd239};
-        v5 = {10'd393, 10'd239};
-        v6 = {10'd63, 10'd85};
-        v7 = {10'd576, 10'd85};
-        v8 = {10'd300, 10'd251};
-        v9 = {10'd339, 10'd251};
-        v10 = {10'd252, 10'd240};
-        v11 = {10'd387, 10'd240};
-        v12 = {10'd295, 10'd219};
-        v13 = {10'd344, 10'd219};
-        v14 = {10'd255, 10'd147};
-        v15 = {10'd384, 10'd147};
-      end
-      4'd12: begin
-        v0 = {10'd253, 10'd335};
-        v1 = {10'd386, 10'd335};
-        v2 = {10'd127, 10'd368};
-        v3 = {10'd512, 10'd368};
-        v4 = {10'd246, 10'd238};
-        v5 = {10'd393, 10'd238};
-        v6 = {10'd63, 10'd39};
-        v7 = {10'd576, 10'd39};
-        v8 = {10'd300, 10'd255};
-        v9 = {10'd339, 10'd255};
-        v10 = {10'd252, 10'd241};
-        v11 = {10'd387, 10'd241};
-        v12 = {10'd297, 10'd225};
-        v13 = {10'd342, 10'd225};
-        v14 = {10'd266, 10'd163};
-        v15 = {10'd373, 10'd163};
-      end
-      4'd13: begin
-        v0 = {10'd235, 10'd361};
-        v1 = {10'd404, 10'd361};
-        v2 = {10'd95, 10'd350};
-        v3 = {10'd544, 10'd350};
-        v4 = {10'd246, 10'd239};
-        v5 = {10'd393, 10'd239};
-        v6 = {10'd125, 10'd56};
-        v7 = {10'd514, 10'd56};
-        v8 = {10'd299, 10'd259};
-        v9 = {10'd340, 10'd259};
-        v10 = {10'd252, 10'd240};
-        v11 = {10'd387, 10'd240};
-        v12 = {10'd299, 10'd229};
-        v13 = {10'd340, 10'd229};
-        v14 = {10'd275, 10'd176};
-        v15 = {10'd364, 10'd176};
-      end
-      4'd14: begin
-        v0 = {10'd215, 10'd386};
-        v1 = {10'd424, 10'd386};
-        v2 = {10'd63, 10'd317};
-        v3 = {10'd576, 10'd317};
-        v4 = {10'd246, 10'd240};
-        v5 = {10'd393, 10'd240};
-        v6 = {10'd145, 10'd49};
-        v7 = {10'd494, 10'd49};
-        v8 = {10'd296, 10'd265};
-        v9 = {10'd343, 10'd265};
-        v10 = {10'd252, 10'd239};
-        v11 = {10'd387, 10'd239};
-        v12 = {10'd300, 10'd234};
-        v13 = {10'd339, 10'd234};
-        v14 = {10'd283, 10'd188};
-        v15 = {10'd356, 10'd188};
-      end
-      4'd15: begin
-        v0 = {10'd215, 10'd381};
-        v1 = {10'd424, 10'd381};
-        v2 = {10'd63, 10'd270};
-        v3 = {10'd576, 10'd270};
-        v4 = {10'd246, 10'd242};
-        v5 = {10'd393, 10'd242};
-        v6 = {10'd163, 10'd52};
-        v7 = {10'd476, 10'd52};
-        v8 = {10'd294, 10'd270};
-        v9 = {10'd345, 10'd270};
-        v10 = {10'd252, 10'd237};
-        v11 = {10'd387, 10'd237};
-        v12 = {10'd300, 10'd237};
-        v13 = {10'd339, 10'd237};
-        v14 = {10'd286, 10'd194};
-        v15 = {10'd353, 10'd194};
-      end
-      default: begin
-        v0 = 20'd0;
-        v1 = 20'd0;
-        v2 = 20'd0;
-        v3 = 20'd0;
-        v4 = 20'd0;
-        v5 = 20'd0;
-        v6 = 20'd0;
-        v7 = 20'd0;
-        v8 = 20'd0;
-        v9 = 20'd0;
-        v10 = 20'd0;
-        v11 = 20'd0;
-        v12 = 20'd0;
-        v13 = 20'd0;
-        v14 = 20'd0;
-        v15 = 20'd0;
-      end
-    endcase
-  end
+    // Background: Deep Space Black
+    R = 2'b00; G = 2'b00; B = 2'b00;
 
-  // ============================================================
-  // DECODE VERTEX COORDS
-  // ============================================================
-  wire [9:0] v0x  = v0[19:10];
-  wire [9:0] v0y  = v0[9:0];
-  wire [9:0] v1x  = v1[19:10];
-  wire [9:0] v1y  = v1[9:0];
-  wire [9:0] v2x  = v2[19:10];
-  wire [9:0] v2y  = v2[9:0];
-  wire [9:0] v3x  = v3[19:10];
-  wire [9:0] v3y  = v3[9:0];
-  wire [9:0] v4x  = v4[19:10];
-  wire [9:0] v4y  = v4[9:0];
-  wire [9:0] v5x  = v5[19:10];
-  wire [9:0] v5y  = v5[9:0];
-  wire [9:0] v6x  = v6[19:10];
-  wire [9:0] v6y  = v6[9:0];
-  wire [9:0] v7x  = v7[19:10];
-  wire [9:0] v7y  = v7[9:0];
-  wire [9:0] v8x  = v8[19:10];
-  wire [9:0] v8y  = v8[9:0];
-  wire [9:0] v9x  = v9[19:10];
-  wire [9:0] v9y  = v9[9:0];
-  wire [9:0] v10x = v10[19:10];
-  wire [9:0] v10y = v10[9:0];
-  wire [9:0] v11x = v11[19:10];
-  wire [9:0] v11y = v11[9:0];
-  wire [9:0] v12x = v12[19:10];
-  wire [9:0] v12y = v12[9:0];
-  wire [9:0] v13x = v13[19:10];
-  wire [9:0] v13y = v13[9:0];
-  wire [9:0] v14x = v14[19:10];
-  wire [9:0] v14y = v14[9:0];
-  wire [9:0] v15x = v15[19:10];
-  wire [9:0] v15y = v15[9:0];
+    if (activevideo) begin
 
-  // ============================================================
-  // VERTEX HITS FOR CURRENT PIXEL
-  // ============================================================
-  wire hit0  = dot2(pix_x, pix_y, v0x,  v0y);
-  wire hit1  = dot2(pix_x, pix_y, v1x,  v1y);
-  wire hit2  = dot2(pix_x, pix_y, v2x,  v2y);
-  wire hit3  = dot2(pix_x, pix_y, v3x,  v3y);
-  wire hit4  = dot2(pix_x, pix_y, v4x,  v4y);
-  wire hit5  = dot2(pix_x, pix_y, v5x,  v5y);
-  wire hit6  = dot2(pix_x, pix_y, v6x,  v6y);
-  wire hit7  = dot2(pix_x, pix_y, v7x,  v7y);
-  wire hit8  = dot2(pix_x, pix_y, v8x,  v8y);
-  wire hit9  = dot2(pix_x, pix_y, v9x,  v9y);
-  wire hit10 = dot2(pix_x, pix_y, v10x, v10y);
-  wire hit11 = dot2(pix_x, pix_y, v11x, v11y);
-  wire hit12 = dot2(pix_x, pix_y, v12x, v12y);
-  wire hit13 = dot2(pix_x, pix_y, v13x, v13y);
-  wire hit14 = dot2(pix_x, pix_y, v14x, v14y);
-  wire hit15 = dot2(pix_x, pix_y, v15x, v15y);
+        // PRIORITY 0: Text Overlay ("UW")
+        // Draws on top of everything else.
+        if (draw_text) begin
+            R = 2'b11; G = 2'b11; B = 2'b11; // White Text
+        end
 
-  wire any_vertex =
-      hit0  | hit1  | hit2  | hit3  |
-      hit4  | hit5  | hit6  | hit7  |
-      hit8  | hit9  | hit10 | hit11 |
-      hit12 | hit13 | hit14 | hit15;
+        // PRIORITY 1: The Front Belt (Bottom Half)
+        else if (in_belt && belt_is_in_front) begin
+            if (belt_gap) begin
+                R = 2'b01; G = 2'b00; B = 2'b00; // Very Dim Red Gap
+            end else if (belt_yellow) begin
+                R = 2'b11; G = 2'b10; B = 2'b00; // Yellow/Orange Ring
+            end else begin
+                R = 2'b11; G = 2'b00; B = 2'b00; // Bright Blood Red
+            end
 
-  // ============================================================
-  // "UW" overlay in top-middle region (pixel-art font, ×4 scale)
-  // ------------------------------------------------------------
-  // Region:
-  //   - y: 40..71  (height 32 px)
-  //   - x: 280..359 (width 80 px)
-  //
-  // Layout:
-  //   U: x = 280..311 (32 px, from font 8×8 scaled by 4)
-  //   gap: 312..327
-  //   W: x = 328..359 (32 px)
-  // ============================================================
-  wire uw_region_y = (pix_y >= 10'd40) && (pix_y < 10'd72);
+        // PRIORITY 2: The Shadow (Event Horizon)
+        end else if (in_shadow) begin
+            R = 2'b00; G = 2'b00; B = 2'b00; // Pure Black
 
-  wire [9:0] uw_y_local = pix_y - 10'd40;   // 0..31
-  wire [2:0] uw_char_y  = uw_y_local[4:2];  // /4 -> 0..7
+        // PRIORITY 3: The Back Belt (Top Half)
+        end else if (in_belt) begin
+            if (belt_gap) begin
+                R = 2'b01; G = 2'b00; B = 2'b00; // Very Dim Red Gap
+            end else if (belt_yellow) begin
+                R = 2'b11; G = 2'b10; B = 2'b00; // Yellow/Orange Ring
+            end else begin
+                R = 2'b11; G = 2'b00; B = 2'b00; // Bright Blood Red
+            end
 
-  // --- U side ---
-  wire uw_U_x_region = (pix_x >= 10'd280) && (pix_x < 10'd312);
-  wire [9:0] U_x_local = pix_x - 10'd280;   // 0..31 when in region
-  wire [2:0] U_char_x  = U_x_local[4:2];    // /4 -> 0..7
-
-  wire uw_pixel_U =
-      uw_region_y &&
-      uw_U_x_region &&
-      uw_font_U(U_char_x, uw_char_y);
-
-  // --- W side ---
-  wire uw_W_x_region = (pix_x >= 10'd328) && (pix_x < 10'd360);
-  wire [9:0] W_x_local = pix_x - 10'd328;   // 0..31 when in region
-  wire [2:0] W_char_x  = W_x_local[4:2];    // /4 -> 0..7
-
-  wire uw_pixel_W =
-      uw_region_y &&
-      uw_W_x_region &&
-      uw_font_W(W_char_x, uw_char_y);
-
-  wire uw_pixel = uw_pixel_U | uw_pixel_W;
-
-  // ============================================================
-  // SIMPLE PIXEL SHADER: BLACK BACKGROUND, WHITE VERTICES + "UW"
-  // ============================================================
-  always @* begin
-    // default: black
-    R = 2'b00;
-    G = 2'b00;
-    B = 2'b00;
-
-    if (video_active && (any_vertex || uw_pixel)) begin
-      R = 2'b11;
-      G = 2'b11;
-      B = 2'b11;
+        // PRIORITY 4: The Halo (Lensed Disk)
+        end else if (in_halo) begin
+            if (halo_gap) begin
+                R = 2'b01; G = 2'b00; B = 2'b00; // Very Dim Red Gap
+            end else if (halo_yellow) begin
+                R = 2'b11; G = 2'b10; B = 2'b00; // Yellow/Orange Ring
+            end else begin
+                R = 2'b11; G = 2'b00; B = 2'b00; // Bright Blood Red
+            end
+        end
     end
   end
 
 endmodule
 
-// ============================================================
+// ===========================================================
 // Simple 640x480@60 Hz VGA sync generator (pixel clock ~25 MHz)
-// ============================================================
+// ===========================================================
 module hvsync_generator (
     input  wire       clk,
     input  wire       reset,       // active-high
