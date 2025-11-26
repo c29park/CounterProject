@@ -35,7 +35,6 @@ module tt_um_vga_example(
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
   assign uio_out = 8'h00;
   assign uio_oe  = 8'h00;
-  wire _unused_ok = &{ena, ui_in, uio_in};
 
   // -------------------------------------------------------
   // Animation Timer
@@ -87,25 +86,6 @@ module tt_um_vga_example(
   localparam HALO_IN_R2  = 22'd5000;
   localparam HALO_OUT_R2 = 22'd22000;
 
-  // -------------------------------------------------------
-  // Stars Logic (Asynchronous Twinkle)
-  // Use top bits of coordinates to create 2x2 pixel blocks
-  wire [9:0] star_x = x_px >> 1;
-  wire [9:0] star_y = y_px >> 1;
-
-  // Better pseudo-random hash to break patterns
-  // ((x * large_prime_A) ^ (y * large_prime_B)) * large_prime_C
-  wire [15:0] star_hash = ((star_x * 16'd433) ^ (star_y * 16'd389)) * 16'd251;
-
-  // 1. Position Check: Sparse distribution (~1/32 blocks)
-  wire is_star_pos = (star_hash[15:11] == 5'b11111);
-
-  // 2. Twinkle Check: slowed by dividing frame count by 8
-  wire is_star_on = ((star_hash[7:0] + frame_cnt[10:3]) > 8'd128);
-
-  wire is_star = is_star_pos && is_star_on;
-
-  // -------------------------------------------------------
   // Text Logic ("UW") - Wait Then Fall
   // -------------------------------------------------------
   // Toggle every ~4 seconds using frame_cnt[8]
@@ -198,10 +178,6 @@ module tt_um_vga_example(
             end else begin
                 R = 2'b11; G = 2'b00; B = 2'b00; // Bright Blood Red
             end
-        
-        // PRIORITY 6: Background Stars
-        end else if (is_star) begin
-            R = 2'b11; G = 2'b11; B = 2'b11; // White Stars
         end
     end
   end
