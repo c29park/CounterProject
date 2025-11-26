@@ -35,7 +35,6 @@ module tt_um_vga_example(
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
   assign uio_out = 8'h00;
   assign uio_oe  = 8'h00;
-  wire _unused_ok = &{ena, ui_in, uio_in};
 
   // -------------------------------------------------------
   // Animation Timer
@@ -43,7 +42,7 @@ module tt_um_vga_example(
   reg [15:0] frame_cnt;
   reg        vsync_prev;
 
-  always @(posedge clk or negedge rst_n) begin
+  always @(posedge clk) begin
     if (!rst_n) begin
       frame_cnt  <= 16'd0;
       vsync_prev <= 1'b0;
