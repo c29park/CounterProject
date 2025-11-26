@@ -1,5 +1,8 @@
 `default_nettype none
 
+// TinyTapeout VGA Tesseract Demo
+// Option A: fully precomputed vertices in a LUT (64 frames × 16 vertices)
+
 module tt_um_vga_example(
     input  wire [7:0] ui_in,    // unused
     output wire [7:0] uo_out,   // {hsync,B0,G0,R0,vsync,B1,G1,R1}
@@ -12,151 +15,62 @@ module tt_um_vga_example(
 );
 
   // ============================================================
-  // USER TUNABLES (same as your original)
-  // ============================================================
-
-  // Geometry scale:
-  //   S0     = half-size in x/y/z
-  //   WBOOST = half-size in w (distance between inner/outer cubes)
-  localparam signed [8:0] S0     = 9'sd145;   // try 48..200
-  localparam signed [8:0] WBOOST = 9'sd145;   // start same as S0
-
-  // Screen placement:
-  localparam signed [10:0] CENTER_X = 11'd320;
-  localparam signed [10:0] CENTER_Y = 11'd240;
-
-  // Global scale factor after projection:
-  // Bigger GLOBAL_GAIN = larger on screen
-  localparam signed [7:0] GLOBAL_GAIN = 8'sd130;
-
-  // "Camera distance" knobs for perspective:
-  // DEPTH_K_W: farther -> less crazy 4D foreshortening
-  // DEPTH_K_Z: farther -> less 3D bulge
-  localparam signed [7:0] DEPTH_K_W = 8'sd128;
-  localparam signed [7:0] DEPTH_K_Z = 8'sd110;
-
-  // Plane enable flags (1 = include that rotation plane in the pipeline)
-  // Planes correspond to: zw, yw, yz, xw, xz, xy
-  localparam ENABLE_ZW = 1'b1;
-  localparam ENABLE_YW = 1'b1;
-  localparam ENABLE_YZ = 1'b1;
-  localparam ENABLE_XW = 1'b1;
-  localparam ENABLE_XZ = 1'b1;
-  localparam ENABLE_XY = 1'b1;
-
-  // Spin control:
-  // Each plane gets: which frame_ctr bits feed its angle (speed),
-  // plus an optional PHASE offset into the LUT.
-  localparam integer ROT_SPEED_SEL_ZW = 0;
-  localparam integer ROT_SPEED_SEL_YW = 0;
-  localparam integer ROT_SPEED_SEL_YZ = 0;
-  localparam integer ROT_SPEED_SEL_XW = 0;
-  localparam integer ROT_SPEED_SEL_XZ = 0;
-  localparam integer ROT_SPEED_SEL_XY = 0;
-
-  localparam [5:0] PHASE_ZW = 6'd0;
-  localparam [5:0] PHASE_YW = 6'd8;
-  localparam [5:0] PHASE_YZ = 6'd16;
-  localparam [5:0] PHASE_XW = 6'd0;
-  localparam [5:0] PHASE_XZ = 6'd12;
-  localparam [5:0] PHASE_XY = 6'd20;
-
-  // ============================================================
   // VGA TIMING
   // ============================================================
-  wire hsync, vsync, video_active;
-  wire [9:0] pix_x, pix_y;
+  wire       hsync;
+  wire       vsync;
+  wire       video_active;
+  wire [9:0] pix_x;
+  wire [9:0] pix_y;
 
   hvsync_generator hvsync_gen (
-    .clk(clk),
-    .reset(~rst_n),
-    .hsync(hsync),
-    .vsync(vsync),
+    .clk       (clk),
+    .reset     (~rst_n),
+    .hsync     (hsync),
+    .vsync     (vsync),
     .display_on(video_active),
-    .hpos(pix_x),
-    .vpos(pix_y)
+    .hpos      (pix_x),
+    .vpos      (pix_y)
   );
 
   // VGA PMOD packing (2:2:2 RGB split across the byte)
   reg [1:0] R, G, B;
   assign uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]};
 
-  // unused IO
+  // Unused IO
   assign uio_out = 8'b0;
   assign uio_oe  = 8'b0;
-  wire _unused_ok = &{ena, ui_in, uio_in};
+  wire _unused_ok = &{1'b0, ena, ui_in, uio_in};
 
   // ============================================================
-  // FRAME COUNTER FOR ANIMATION
+  // FRAME COUNTER (drives the LUT)
   // ============================================================
-  reg vsync_d;
-  reg [15:0] frame_ctr;
+  reg       vsync_d;
+  reg [7:0] frame_ctr;    // we only use the lower 6 bits
+
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       vsync_d   <= 1'b0;
-      frame_ctr <= 16'd0;
+      frame_ctr <= 8'd0;
     end else begin
       vsync_d <= vsync;
+      // On vsync rising edge => new frame
       if (vsync && !vsync_d)
-        frame_ctr <= frame_ctr + 16'd1;
+        frame_ctr <= frame_ctr + 8'd1;
     end
   end
 
-  // vsync rising edge (start of frame)
-  wire vsync_rise = vsync && !vsync_d;
-
-  // Angles for all six planes.
-  wire [5:0] ang_zw = frame_ctr[ROT_SPEED_SEL_ZW +: 6] + PHASE_ZW;
-  wire [5:0] ang_yw = frame_ctr[ROT_SPEED_SEL_YW +: 6] + PHASE_YW;
-  wire [5:0] ang_yz = frame_ctr[ROT_SPEED_SEL_YZ +: 6] + PHASE_YZ;
-  wire [5:0] ang_xw = frame_ctr[ROT_SPEED_SEL_XW +: 6] + PHASE_XW;
-  wire [5:0] ang_xz = frame_ctr[ROT_SPEED_SEL_XZ +: 6] + PHASE_XZ;
-  wire [5:0] ang_xy = frame_ctr[ROT_SPEED_SEL_XY +: 6] + PHASE_XY;
-
-  // LUT sin/cos for each plane (Q1.7 signed) – same as original
-  wire signed [7:0] cos_zw_q7, sin_zw_q7;
-  wire signed [7:0] cos_yw_q7, sin_yw_q7;
-  wire signed [7:0] cos_yz_q7, sin_yz_q7;
-  wire signed [7:0] cos_xw_q7, sin_xw_q7;
-  wire signed [7:0] cos_xz_q7, sin_xz_q7;
-  wire signed [7:0] cos_xy_q7, sin_xy_q7;
-
-  sincos64 lut_zw(.idx(ang_zw), .cos_q(cos_zw_q7), .sin_q(sin_zw_q7));
-  sincos64 lut_yw(.idx(ang_yw), .cos_q(cos_yw_q7), .sin_q(sin_yw_q7));
-  sincos64 lut_yz(.idx(ang_yz), .cos_q(cos_yz_q7), .sin_q(sin_yz_q7));
-  sincos64 lut_xw(.idx(ang_xw), .cos_q(cos_xw_q7), .sin_q(sin_xw_q7));
-  sincos64 lut_xz(.idx(ang_xz), .cos_q(cos_xz_q7), .sin_q(sin_xz_q7));
-  sincos64 lut_xy(.idx(ang_xy), .cos_q(cos_xy_q7), .sin_q(sin_xy_q7));
+  wire [5:0] frame = frame_ctr[5:0];  // 0..63
 
   // ============================================================
-  // HELPER FUNCTIONS
+  // SMALL HELPER: ABS + DIAMOND DOT
   // ============================================================
 
-  // abs for ~11-bit signed
+  // abs for 11-bit signed
   function [10:0] abs11;
     input signed [10:0] v;
     begin
       abs11 = v[10] ? (~v + 1'b1) : v;
-    end
-  endfunction
-
-  // clamp X to visible 0..639
-  function [9:0] clamp_x;
-    input signed [10:0] v;
-    begin
-      if (v < 0)             clamp_x = 10'd0;
-      else if (v > 11'sd639) clamp_x = 10'd639;
-      else                   clamp_x = v[9:0];
-    end
-  endfunction
-
-  // clamp Y to visible 0..479
-  function [9:0] clamp_y;
-    input signed [10:0] v;
-    begin
-      if (v < 0)             clamp_y = 10'd0;
-      else if (v > 11'sd479) clamp_y = 10'd479;
-      else                   clamp_y = v[9:0];
     end
   endfunction
 
@@ -168,8 +82,8 @@ module tt_um_vga_example(
     reg [10:0] adx, ady;
     reg [10:0] man;
     begin
-      dx  = $signed({1'b0,px}) - $signed({1'b0,cx});
-      dy  = $signed({1'b0,py}) - $signed({1'b0,cy});
+      dx  = $signed({1'b0, px}) - $signed({1'b0, cx});
+      dy  = $signed({1'b0, py}) - $signed({1'b0, cy});
       adx = abs11(dx);
       ady = abs11(dy);
       man = adx + ady;
@@ -177,277 +91,1274 @@ module tt_um_vga_example(
     end
   endfunction
 
-  // 16-entry reciprocal LUT in Q0.8
-  // we use this for rough 1/(K - depth)
-  function [7:0] inv16_q0p8;
-    input [3:0] idx;
-    begin
-      case (idx)
-        4'h0: inv16_q0p8=8'd255; 4'h1: inv16_q0p8=8'd224;
-        4'h2: inv16_q0p8=8'd192; 4'h3: inv16_q0p8=8'd171;
-        4'h4: inv16_q0p8=8'd153; 4'h5: inv16_q0p8=8'd137;
-        4'h6: inv16_q0p8=8'd123; 4'h7: inv16_q0p8=8'd111;
-        4'h8: inv16_q0p8=8'd101; 4'h9: inv16_q0p8=8'd92;
-        4'hA: inv16_q0p8=8'd85;  4'hB: inv16_q0p8=8'd78;
-        4'hC: inv16_q0p8=8'd73;  4'hD: inv16_q0p8=8'd68;
-        4'hE: inv16_q0p8=8'd64;  4'hF: inv16_q0p8=8'd60;
-      endcase
-    end
-  endfunction
-
   // ============================================================
-  // project_vertex: **exact same math as your original**
-  // ============================================================
-  function [19:0] project_vertex;
-    input [3:0] vidx;
-
-    // base Q1.7 coords
-    reg signed [15:0] x_q, y_q, z_q, w_q;
-
-    // temp mults
-    reg signed [23:0] mulA, mulB;
-
-    // perspective bits
-    reg signed [15:0] w_clip_q;
-    reg signed [8:0]  w_clip_lite;
-    reg signed [8:0]  denom_w;
-    reg [3:0]         recip_idx_w;
-    reg [7:0]         recip_w_q;
-    reg signed [23:0] s_w_mul;
-    reg signed [15:0] s_w_q;
-
-    reg signed [15:0] z_clip_q;
-    reg signed [8:0]  z_clip_lite;
-    reg signed [8:0]  denom_z;
-    reg [3:0]         recip_idx_z;
-    reg [7:0]         recip_z_q;
-    reg signed [23:0] s_z_mul;
-    reg signed [15:0] s_z_q;
-
-    reg signed [31:0] s_total_mul;
-    reg signed [15:0] s_total_q;
-
-    reg signed [31:0] Xmul, Ymul;
-    reg signed [10:0] sx, sy;
-    reg [9:0] sx_clamped, sy_clamped;
-
-    begin
-      // ---- 1. base corner in Q1.7 ----
-      x_q = vidx[0] ?  (S0     <<< 7) : -(S0     <<< 7);
-      y_q = vidx[1] ?  (S0     <<< 7) : -(S0     <<< 7);
-      z_q = vidx[2] ?  (S0     <<< 7) : -(S0     <<< 7);
-      w_q = vidx[3] ?  (WBOOST <<< 7) : -(WBOOST <<< 7);
-
-      // ---- 2. chained 4D rotations ----
-      // zw plane (z <-> w)
-      if (ENABLE_ZW) begin
-        mulA = z_q * cos_zw_q7 - w_q * sin_zw_q7;
-        mulB = z_q * sin_zw_q7 + w_q * cos_zw_q7;
-        z_q  = mulA >>> 7;
-        w_q  = mulB >>> 7;
-      end
-
-      // yw plane (y <-> w)
-      if (ENABLE_YW) begin
-        mulA = y_q * cos_yw_q7 - w_q * sin_yw_q7;
-        mulB = y_q * sin_yw_q7 + w_q * cos_yw_q7;
-        y_q  = mulA >>> 7;
-        w_q  = mulB >>> 7;
-      end
-
-      // yz plane (y <-> z)
-      if (ENABLE_YZ) begin
-        mulA = y_q * cos_yz_q7 - z_q * sin_yz_q7;
-        mulB = y_q * sin_yz_q7 + z_q * cos_yz_q7;
-        y_q  = mulA >>> 7;
-        z_q  = mulB >>> 7;
-      end
-
-      // xw plane (x <-> w)
-      if (ENABLE_XW) begin
-        mulA = x_q * cos_xw_q7 - w_q * sin_xw_q7;
-        mulB = x_q * sin_xw_q7 + w_q * cos_xw_q7;
-        x_q  = mulA >>> 7;
-        w_q  = mulB >>> 7;
-      end
-
-      // xz plane (x <-> z)
-      if (ENABLE_XZ) begin
-        mulA = x_q * cos_xz_q7 - z_q * sin_xz_q7;
-        mulB = x_q * sin_xz_q7 + z_q * cos_xz_q7;
-        x_q  = mulA >>> 7;
-        z_q  = mulB >>> 7;
-      end
-
-      // xy plane (x <-> y)
-      if (ENABLE_XY) begin
-        mulA = x_q * cos_xy_q7 - y_q * sin_xy_q7;
-        mulB = x_q * sin_xy_q7 + y_q * cos_xy_q7;
-        x_q  = mulA >>> 7;
-        y_q  = mulB >>> 7;
-      end
-
-      // ---- 3. perspective from W (DEPTH_K_W) ----
-      w_clip_q = w_q;
-      if (w_clip_q[15]) begin
-        w_clip_lite = -9'sd100;
-      end else if (w_clip_q[15:7] > 8'sd100) begin
-        w_clip_lite = 9'sd100;
-      end else begin
-        w_clip_lite = {1'b0, w_clip_q[14:7]};
-      end
-
-      denom_w = {{1{DEPTH_K_W[7]}}, DEPTH_K_W} - w_clip_lite[7:0];
-      if (denom_w[8])
-        recip_idx_w = 4'hF;
-      else
-        recip_idx_w = denom_w[7:4];
-      recip_w_q = inv16_q0p8(recip_idx_w); // Q0.8 approx 1/(DEPTH_K_W-w)
-
-      // s_w_q ~ recip_w_q * GLOBAL_GAIN
-      s_w_mul = $signed({1'b0,recip_w_q}) * $signed(GLOBAL_GAIN);
-      s_w_q   = s_w_mul[22:7]; // ~Q1.7
-
-      // ---- 4. perspective from Z (DEPTH_K_Z) ----
-      z_clip_q = z_q;
-      if (z_clip_q[15]) begin
-        z_clip_lite = -9'sd100;
-      end else if (z_clip_q[15:7] > 8'sd100) begin
-        z_clip_lite = 9'sd100;
-      end else begin
-        z_clip_lite = {1'b0, z_clip_q[14:7]};
-      end
-
-      denom_z = {{1{DEPTH_K_Z[7]}}, DEPTH_K_Z} - z_clip_lite[7:0];
-      if (denom_z[8])
-        recip_idx_z = 4'hF;
-      else
-        recip_idx_z = denom_z[7:4];
-      recip_z_q = inv16_q0p8(recip_idx_z); // Q0.8 approx 1/(DEPTH_K_Z-z)
-
-      // s_z_q ~ recip_z_q * 128 (128 ≈ 1.0 in Q1.7)
-      s_z_mul = $signed({1'b0,recip_z_q}) * $signed(8'sd128);
-      s_z_q   = s_z_mul[22:7]; // ~Q1.7
-
-      // combine
-      s_total_mul = $signed(s_w_q) * $signed(s_z_q); // Q1.7*Q1.7 => Q2.14-ish
-      s_total_q   = s_total_mul[22:7];               // back to ~Q1.7
-
-      // ---- 5. final screen projection for x,y ----
-      Xmul = $signed(x_q) * $signed(s_total_q);
-      Ymul = $signed(y_q) * $signed(s_total_q);
-
-      // shift down ~15 to turn Q-ish product into pixels
-      sx = $signed(CENTER_X) + (Xmul >>> 15);
-      sy = $signed(CENTER_Y) + (Ymul >>> 15);
-
-      // clamp to visible range
-      sx_clamped = clamp_x(sx);
-      sy_clamped = clamp_y(sy);
-
-      project_vertex = {sx_clamped, sy_clamped};
-    end
-  endfunction
-
-  // ============================================================
-  // GENERATE ALL 16 PROJECTED VERTICES (precompute per frame)
+  // PRECOMPUTED TESSERACT VERTEX LUT (64 frames × 16 vertices)
+  // Each vertex is {x[19:10], y[9:0]} with 10-bit coordinates
   // ============================================================
 
-  // Storage for 16 vertices: {x[19:10], y[9:0]}
-  reg [19:0] v_reg [0:15];
-  reg [3:0]  v_idx;
-  reg        v_compute;
+  reg [19:0] v0,  v1,  v2,  v3;
+  reg [19:0] v4,  v5,  v6,  v7;
+  reg [19:0] v8,  v9,  v10, v11;
+  reg [19:0] v12, v13, v14, v15;
 
-  integer i;
-
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      v_idx     <= 4'd0;
-      v_compute <= 1'b0;
-      for (i = 0; i < 16; i = i + 1)
-        v_reg[i] <= 20'd0;
-    end else begin
-      // Start a new vertex computation pass at beginning of frame
-      if (vsync_rise) begin
-        v_idx     <= 4'd0;
-        v_compute <= 1'b1;
-      end else if (v_compute) begin
-        // Compute one vertex per clock using shared project_vertex logic
-        v_reg[v_idx] <= project_vertex(v_idx);
-
-        if (v_idx == 4'd15) begin
-          v_compute <= 1'b0;      // done this frame
-        end else begin
-          v_idx <= v_idx + 4'd1;  // next vertex
-        end
+  always @* begin
+    // ----------------------------------------------------------------
+    // Precomputed tesseract vertices (64 frames × 16 vertices)
+    // Generated by Python script
+    // ----------------------------------------------------------------
+    case (frame)
+      6'd0: begin
+        v0 = {10'd329, 10'd240};
+        v1 = {10'd387, 10'd240};
+        v2 = {10'd334, 10'd281};
+        v3 = {10'd426, 10'd357};
+        v4 = {10'd292, 10'd240};
+        v5 = {10'd285, 10'd240};
+        v6 = {10'd276, 10'd287};
+        v7 = {10'd266, 10'd396};
+        v8 = {10'd334, 10'd198};
+        v9 = {10'd426, 10'd122};
+        v10 = {10'd351, 10'd240};
+        v11 = {10'd557, 10'd240};
+        v12 = {10'd276, 10'd192};
+        v13 = {10'd266, 10'd83};
+        v14 = {10'd223, 10'd240};
+        v15 = {10'd199, 10'd240};
       end
-    end
+      6'd1: begin
+        v0 = {10'd331, 10'd242};
+        v1 = {10'd395, 10'd247};
+        v2 = {10'd341, 10'd289};
+        v3 = {10'd464, 10'd406};
+        v4 = {10'd295, 10'd242};
+        v5 = {10'd277, 10'd248};
+        v6 = {10'd273, 10'd293};
+        v7 = {10'd239, 10'd429};
+        v8 = {10'd336, 10'd202};
+        v9 = {10'd427, 10'd115};
+        v10 = {10'd359, 10'd232};
+        v11 = {10'd583, 10'd213};
+        v12 = {10'd284, 10'd199};
+        v13 = {10'd259, 10'd98};
+        v14 = {10'd234, 10'd231};
+        v15 = {10'd171, 10'd209};
+      end
+      6'd2: begin
+        v0 = {10'd333, 10'd244};
+        v1 = {10'd399, 10'd257};
+        v2 = {10'd348, 10'd294};
+        v3 = {10'd489, 10'd447};
+        v4 = {10'd299, 10'd244};
+        v5 = {10'd269, 10'd257};
+        v6 = {10'd275, 10'd294};
+        v7 = {10'd211, 10'd447};
+        v8 = {10'd337, 10'd206};
+        v9 = {10'd425, 10'd111};
+        v10 = {10'd367, 10'd224};
+        v11 = {10'd598, 10'd179};
+        v12 = {10'd292, 10'd206};
+        v13 = {10'd252, 10'd111};
+        v14 = {10'd246, 10'd224};
+        v15 = {10'd141, 10'd179};
+      end
+      6'd3: begin
+        v0 = {10'd335, 10'd246};
+        v1 = {10'd393, 10'd265};
+        v2 = {10'd357, 10'd299};
+        v3 = {10'd494, 10'd464};
+        v4 = {10'd300, 10'd246};
+        v5 = {10'd261, 10'd265};
+        v6 = {10'd273, 10'd299};
+        v7 = {10'd180, 10'd464};
+        v8 = {10'd338, 10'd210};
+        v9 = {10'd408, 10'd125};
+        v10 = {10'd374, 10'd216};
+        v11 = {10'd576, 10'd149};
+        v12 = {10'd296, 10'd210};
+        v13 = {10'd249, 10'd125};
+        v14 = {10'd252, 10'd216};
+        v15 = {10'd115, 10'd149};
+      end
+      6'd4: begin
+        v0 = {10'd337, 10'd249};
+        v1 = {10'd386, 10'd274};
+        v2 = {10'd366, 10'd303};
+        v3 = {10'd496, 10'd479};
+        v4 = {10'd302, 10'd249};
+        v5 = {10'd253, 10'd274};
+        v6 = {10'd273, 10'd303};
+        v7 = {10'd143, 10'd479};
+        v8 = {10'd340, 10'd212};
+        v9 = {10'd395, 10'd137};
+        v10 = {10'd381, 10'd208};
+        v11 = {10'd552, 10'd119};
+        v12 = {10'd299, 10'd212};
+        v13 = {10'd244, 10'd137};
+        v14 = {10'd258, 10'd208};
+        v15 = {10'd87, 10'd119};
+      end
+      6'd5: begin
+        v0 = {10'd339, 10'd251};
+        v1 = {10'd378, 10'd282};
+        v2 = {10'd378, 10'd308};
+        v3 = {10'd495, 10'd479};
+        v4 = {10'd304, 10'd251};
+        v5 = {10'd246, 10'd282};
+        v6 = {10'd273, 10'd308};
+        v7 = {10'd100, 10'd479};
+        v8 = {10'd340, 10'd216};
+        v9 = {10'd381, 10'd149};
+        v10 = {10'd387, 10'd200};
+        v11 = {10'd524, 10'd91};
+        v12 = {10'd303, 10'd216};
+        v13 = {10'd242, 10'd149};
+        v14 = {10'd265, 10'd200};
+        v15 = {10'd63, 10'd91};
+      end
+      6'd6: begin
+        v0 = {10'd340, 10'd253};
+        v1 = {10'd370, 10'd290};
+        v2 = {10'd393, 10'd313};
+        v3 = {10'd498, 10'd479};
+        v4 = {10'd306, 10'd253};
+        v5 = {10'd240, 10'd290};
+        v6 = {10'd272, 10'd313};
+        v7 = {10'd41, 10'd479};
+        v8 = {10'd340, 10'd219};
+        v9 = {10'd370, 10'd160};
+        v10 = {10'd393, 10'd192};
+        v11 = {10'd498, 10'd61};
+        v12 = {10'd306, 10'd219};
+        v13 = {10'd240, 10'd160};
+        v14 = {10'd272, 10'd192};
+        v15 = {10'd41, 10'd61};
+      end
+      6'd7: begin
+        v0 = {10'd344, 10'd256};
+        v1 = {10'd362, 10'd298};
+        v2 = {10'd405, 10'd313};
+        v3 = {10'd468, 10'd479};
+        v4 = {10'd308, 10'd255};
+        v5 = {10'd244, 10'd291};
+        v6 = {10'd280, 10'd307};
+        v7 = {10'd56, 10'd464};
+        v8 = {10'd344, 10'd219};
+        v9 = {10'd362, 10'd166};
+        v10 = {10'd405, 10'd181};
+        v11 = {10'd468, 10'd35};
+        v12 = {10'd308, 10'd220};
+        v13 = {10'd244, 10'd175};
+        v14 = {10'd280, 10'd185};
+        v15 = {10'd56, 10'd60};
+      end
+      6'd8: begin
+        v0 = {10'd347, 10'd260};
+        v1 = {10'd354, 10'd306};
+        v2 = {10'd416, 10'd310};
+        v3 = {10'd440, 10'd472};
+        v4 = {10'd310, 10'd257};
+        v5 = {10'd252, 10'd289};
+        v6 = {10'd288, 10'd301};
+        v7 = {10'd82, 10'd414};
+        v8 = {10'd347, 10'd219};
+        v9 = {10'd354, 10'd173};
+        v10 = {10'd416, 10'd169};
+        v11 = {10'd440, 10'd7};
+        v12 = {10'd310, 10'd222};
+        v13 = {10'd252, 10'd190};
+        v14 = {10'd288, 10'd178};
+        v15 = {10'd82, 10'd65};
+      end
+      6'd9: begin
+        v0 = {10'd351, 10'd264};
+        v1 = {10'd345, 10'd313};
+        v2 = {10'd429, 10'd307};
+        v3 = {10'd410, 10'd444};
+        v4 = {10'd313, 10'd259};
+        v5 = {10'd257, 10'd288};
+        v6 = {10'd296, 10'd294};
+        v7 = {10'd98, 10'd376};
+        v8 = {10'd351, 10'd220};
+        v9 = {10'd345, 10'd181};
+        v10 = {10'd429, 10'd155};
+        v11 = {10'd410, 10'd0};
+        v12 = {10'd313, 10'd224};
+        v13 = {10'd257, 10'd201};
+        v14 = {10'd296, 10'd172};
+        v15 = {10'd98, 10'd68};
+      end
+      6'd10: begin
+        v0 = {10'd354, 10'd268};
+        v1 = {10'd337, 10'd319};
+        v2 = {10'd442, 10'd304};
+        v3 = {10'd380, 10'd418};
+        v4 = {10'd315, 10'd260};
+        v5 = {10'd262, 10'd287};
+        v6 = {10'd304, 10'd287};
+        v7 = {10'd116, 10'd346};
+        v8 = {10'd354, 10'd221};
+        v9 = {10'd337, 10'd189};
+        v10 = {10'd442, 10'd139};
+        v11 = {10'd380, 10'd0};
+        v12 = {10'd315, 10'd226};
+        v13 = {10'd262, 10'd209};
+        v14 = {10'd304, 10'd166};
+        v15 = {10'd116, 10'd73};
+      end
+      6'd11: begin
+        v0 = {10'd365, 10'd279};
+        v1 = {10'd329, 10'd330};
+        v2 = {10'd470, 10'd304};
+        v3 = {10'd350, 10'd388};
+        v4 = {10'd317, 10'd263};
+        v5 = {10'd264, 10'd288};
+        v6 = {10'd312, 10'd279};
+        v7 = {10'd134, 10'd319};
+        v8 = {10'd362, 10'd221};
+        v9 = {10'd328, 10'd197};
+        v10 = {10'd449, 10'd127};
+        v11 = {10'd345, 10'd0};
+        v12 = {10'd317, 10'd228};
+        v13 = {10'd267, 10'd217};
+        v14 = {10'd313, 10'd171};
+        v15 = {10'd160, 10'd101};
+      end
+      6'd12: begin
+        v0 = {10'd374, 10'd289};
+        v1 = {10'd320, 10'd342};
+        v2 = {10'd487, 10'd297};
+        v3 = {10'd320, 10'd360};
+        v4 = {10'd320, 10'd267};
+        v5 = {10'd265, 10'd289};
+        v6 = {10'd320, 10'd271};
+        v7 = {10'd152, 10'd297};
+        v8 = {10'd367, 10'd223};
+        v9 = {10'd320, 10'd205};
+        v10 = {10'd447, 10'd123};
+        v11 = {10'd320, 10'd0};
+        v12 = {10'd320, 10'd230};
+        v13 = {10'd272, 10'd223};
+        v14 = {10'd320, 10'd176};
+        v15 = {10'd192, 10'd123};
+      end
+      6'd13: begin
+        v0 = {10'd384, 10'd301};
+        v1 = {10'd309, 10'd354};
+        v2 = {10'd505, 10'd288};
+        v3 = {10'd289, 10'd330};
+        v4 = {10'd322, 10'd269};
+        v5 = {10'd267, 10'd289};
+        v6 = {10'd327, 10'd263};
+        v7 = {10'd169, 10'd279};
+        v8 = {10'd372, 10'd226};
+        v9 = {10'd311, 10'd214};
+        v10 = {10'd446, 10'd119};
+        v11 = {10'd299, 10'd15};
+        v12 = {10'd322, 10'd233};
+        v13 = {10'd277, 10'd228};
+        v14 = {10'd325, 10'd180};
+        v15 = {10'd217, 10'd142};
+      end
+      6'd14: begin
+        v0 = {10'd396, 10'd316};
+        v1 = {10'd297, 10'd368};
+        v2 = {10'd523, 10'd275};
+        v3 = {10'd259, 10'd300};
+        v4 = {10'd325, 10'd273};
+        v5 = {10'd274, 10'd285};
+        v6 = {10'd335, 10'd255};
+        v7 = {10'd197, 10'd261};
+        v8 = {10'd377, 10'd229};
+        v9 = {10'd302, 10'd222};
+        v10 = {10'd444, 10'd115};
+        v11 = {10'd283, 10'd32};
+        v12 = {10'd324, 10'd235};
+        v13 = {10'd285, 10'd233};
+        v14 = {10'd329, 10'd185};
+        v15 = {10'd245, 10'd165};
+      end
+      6'd15: begin
+        v0 = {10'd410, 10'd334};
+        v1 = {10'd283, 10'd381};
+        v2 = {10'd541, 10'd260};
+        v3 = {10'd229, 10'd270};
+        v4 = {10'd329, 10'd277};
+        v5 = {10'd275, 10'd286};
+        v6 = {10'd343, 10'd247};
+        v7 = {10'd210, 10'd249};
+        v8 = {10'd382, 10'd234};
+        v9 = {10'd294, 10'd231};
+        v10 = {10'd440, 10'd113};
+        v11 = {10'd270, 10'd50};
+        v12 = {10'd326, 10'd237};
+        v13 = {10'd288, 10'd237};
+        v14 = {10'd332, 10'd190};
+        v15 = {10'd260, 10'd177};
+      end
+      6'd16: begin
+        v0 = {10'd426, 10'd357};
+        v1 = {10'd266, 10'd396};
+        v2 = {10'd557, 10'd240};
+        v3 = {10'd199, 10'd240};
+        v4 = {10'd334, 10'd281};
+        v5 = {10'd276, 10'd287};
+        v6 = {10'd351, 10'd240};
+        v7 = {10'd223, 10'd240};
+        v8 = {10'd387, 10'd240};
+        v9 = {10'd285, 10'd240};
+        v10 = {10'd426, 10'd122};
+        v11 = {10'd266, 10'd83};
+        v12 = {10'd329, 10'd240};
+        v13 = {10'd292, 10'd240};
+        v14 = {10'd334, 10'd198};
+        v15 = {10'd276, 10'd192};
+      end
+      6'd17: begin
+        v0 = {10'd464, 10'd406};
+        v1 = {10'd239, 10'd429};
+        v2 = {10'd583, 10'd213};
+        v3 = {10'd171, 10'd209};
+        v4 = {10'd341, 10'd289};
+        v5 = {10'd273, 10'd293};
+        v6 = {10'd359, 10'd232};
+        v7 = {10'd234, 10'd231};
+        v8 = {10'd395, 10'd247};
+        v9 = {10'd277, 10'd248};
+        v10 = {10'd427, 10'd115};
+        v11 = {10'd259, 10'd98};
+        v12 = {10'd331, 10'd242};
+        v13 = {10'd295, 10'd242};
+        v14 = {10'd336, 10'd202};
+        v15 = {10'd284, 10'd199};
+      end
+      6'd18: begin
+        v0 = {10'd489, 10'd447};
+        v1 = {10'd211, 10'd447};
+        v2 = {10'd598, 10'd179};
+        v3 = {10'd141, 10'd179};
+        v4 = {10'd348, 10'd294};
+        v5 = {10'd275, 10'd294};
+        v6 = {10'd367, 10'd224};
+        v7 = {10'd246, 10'd224};
+        v8 = {10'd399, 10'd257};
+        v9 = {10'd269, 10'd257};
+        v10 = {10'd425, 10'd111};
+        v11 = {10'd252, 10'd111};
+        v12 = {10'd333, 10'd244};
+        v13 = {10'd299, 10'd244};
+        v14 = {10'd337, 10'd206};
+        v15 = {10'd292, 10'd206};
+      end
+      6'd19: begin
+        v0 = {10'd494, 10'd464};
+        v1 = {10'd180, 10'd464};
+        v2 = {10'd576, 10'd149};
+        v3 = {10'd115, 10'd149};
+        v4 = {10'd357, 10'd299};
+        v5 = {10'd273, 10'd299};
+        v6 = {10'd374, 10'd216};
+        v7 = {10'd252, 10'd216};
+        v8 = {10'd393, 10'd265};
+        v9 = {10'd261, 10'd265};
+        v10 = {10'd408, 10'd125};
+        v11 = {10'd249, 10'd125};
+        v12 = {10'd335, 10'd246};
+        v13 = {10'd300, 10'd246};
+        v14 = {10'd338, 10'd210};
+        v15 = {10'd296, 10'd210};
+      end
+      6'd20: begin
+        v0 = {10'd496, 10'd479};
+        v1 = {10'd143, 10'd479};
+        v2 = {10'd552, 10'd119};
+        v3 = {10'd87, 10'd119};
+        v4 = {10'd366, 10'd303};
+        v5 = {10'd273, 10'd303};
+        v6 = {10'd381, 10'd208};
+        v7 = {10'd258, 10'd208};
+        v8 = {10'd386, 10'd274};
+        v9 = {10'd253, 10'd274};
+        v10 = {10'd395, 10'd137};
+        v11 = {10'd244, 10'd137};
+        v12 = {10'd337, 10'd249};
+        v13 = {10'd302, 10'd249};
+        v14 = {10'd340, 10'd212};
+        v15 = {10'd299, 10'd212};
+      end
+      6'd21: begin
+        v0 = {10'd495, 10'd479};
+        v1 = {10'd100, 10'd479};
+        v2 = {10'd524, 10'd91};
+        v3 = {10'd63, 10'd91};
+        v4 = {10'd378, 10'd308};
+        v5 = {10'd273, 10'd308};
+        v6 = {10'd387, 10'd200};
+        v7 = {10'd265, 10'd200};
+        v8 = {10'd378, 10'd282};
+        v9 = {10'd246, 10'd282};
+        v10 = {10'd381, 10'd149};
+        v11 = {10'd242, 10'd149};
+        v12 = {10'd339, 10'd251};
+        v13 = {10'd304, 10'd251};
+        v14 = {10'd340, 10'd216};
+        v15 = {10'd303, 10'd216};
+      end
+      6'd22: begin
+        v0 = {10'd498, 10'd479};
+        v1 = {10'd41, 10'd479};
+        v2 = {10'd498, 10'd61};
+        v3 = {10'd41, 10'd61};
+        v4 = {10'd393, 10'd313};
+        v5 = {10'd272, 10'd313};
+        v6 = {10'd393, 10'd192};
+        v7 = {10'd272, 10'd192};
+        v8 = {10'd370, 10'd290};
+        v9 = {10'd240, 10'd290};
+        v10 = {10'd370, 10'd160};
+        v11 = {10'd240, 10'd160};
+        v12 = {10'd340, 10'd253};
+        v13 = {10'd306, 10'd253};
+        v14 = {10'd340, 10'd219};
+        v15 = {10'd306, 10'd219};
+      end
+      6'd23: begin
+        v0 = {10'd468, 10'd479};
+        v1 = {10'd56, 10'd464};
+        v2 = {10'd468, 10'd35};
+        v3 = {10'd56, 10'd60};
+        v4 = {10'd405, 10'd313};
+        v5 = {10'd280, 10'd307};
+        v6 = {10'd405, 10'd181};
+        v7 = {10'd280, 10'd185};
+        v8 = {10'd362, 10'd298};
+        v9 = {10'd244, 10'd291};
+        v10 = {10'd362, 10'd166};
+        v11 = {10'd244, 10'd175};
+        v12 = {10'd344, 10'd256};
+        v13 = {10'd308, 10'd255};
+        v14 = {10'd344, 10'd219};
+        v15 = {10'd308, 10'd220};
+      end
+      6'd24: begin
+        v0 = {10'd440, 10'd472};
+        v1 = {10'd82, 10'd414};
+        v2 = {10'd440, 10'd7};
+        v3 = {10'd82, 10'd65};
+        v4 = {10'd416, 10'd310};
+        v5 = {10'd288, 10'd301};
+        v6 = {10'd416, 10'd169};
+        v7 = {10'd288, 10'd178};
+        v8 = {10'd354, 10'd306};
+        v9 = {10'd252, 10'd289};
+        v10 = {10'd354, 10'd173};
+        v11 = {10'd252, 10'd190};
+        v12 = {10'd347, 10'd260};
+        v13 = {10'd310, 10'd257};
+        v14 = {10'd347, 10'd219};
+        v15 = {10'd310, 10'd222};
+      end
+      6'd25: begin
+        v0 = {10'd410, 10'd444};
+        v1 = {10'd98, 10'd376};
+        v2 = {10'd410, 10'd0};
+        v3 = {10'd98, 10'd68};
+        v4 = {10'd429, 10'd307};
+        v5 = {10'd296, 10'd294};
+        v6 = {10'd429, 10'd155};
+        v7 = {10'd296, 10'd172};
+        v8 = {10'd345, 10'd313};
+        v9 = {10'd257, 10'd288};
+        v10 = {10'd345, 10'd181};
+        v11 = {10'd257, 10'd201};
+        v12 = {10'd351, 10'd264};
+        v13 = {10'd313, 10'd259};
+        v14 = {10'd351, 10'd220};
+        v15 = {10'd313, 10'd224};
+      end
+      6'd26: begin
+        v0 = {10'd380, 10'd418};
+        v1 = {10'd116, 10'd346};
+        v2 = {10'd380, 10'd0};
+        v3 = {10'd116, 10'd73};
+        v4 = {10'd442, 10'd304};
+        v5 = {10'd304, 10'd287};
+        v6 = {10'd442, 10'd139};
+        v7 = {10'd304, 10'd166};
+        v8 = {10'd337, 10'd319};
+        v9 = {10'd262, 10'd287};
+        v10 = {10'd337, 10'd189};
+        v11 = {10'd262, 10'd209};
+        v12 = {10'd354, 10'd268};
+        v13 = {10'd315, 10'd260};
+        v14 = {10'd354, 10'd221};
+        v15 = {10'd315, 10'd226};
+      end
+      6'd27: begin
+        v0 = {10'd350, 10'd388};
+        v1 = {10'd134, 10'd319};
+        v2 = {10'd345, 10'd0};
+        v3 = {10'd160, 10'd101};
+        v4 = {10'd470, 10'd304};
+        v5 = {10'd312, 10'd279};
+        v6 = {10'd449, 10'd127};
+        v7 = {10'd313, 10'd171};
+        v8 = {10'd329, 10'd330};
+        v9 = {10'd264, 10'd288};
+        v10 = {10'd328, 10'd197};
+        v11 = {10'd267, 10'd217};
+        v12 = {10'd365, 10'd279};
+        v13 = {10'd317, 10'd263};
+        v14 = {10'd362, 10'd221};
+        v15 = {10'd317, 10'd228};
+      end
+      6'd28: begin
+        v0 = {10'd320, 10'd360};
+        v1 = {10'd152, 10'd297};
+        v2 = {10'd320, 10'd0};
+        v3 = {10'd192, 10'd123};
+        v4 = {10'd487, 10'd297};
+        v5 = {10'd320, 10'd271};
+        v6 = {10'd447, 10'd123};
+        v7 = {10'd320, 10'd176};
+        v8 = {10'd320, 10'd342};
+        v9 = {10'd265, 10'd289};
+        v10 = {10'd320, 10'd205};
+        v11 = {10'd272, 10'd223};
+        v12 = {10'd374, 10'd289};
+        v13 = {10'd320, 10'd267};
+        v14 = {10'd367, 10'd223};
+        v15 = {10'd320, 10'd230};
+      end
+      6'd29: begin
+        v0 = {10'd289, 10'd330};
+        v1 = {10'd169, 10'd279};
+        v2 = {10'd299, 10'd15};
+        v3 = {10'd217, 10'd142};
+        v4 = {10'd505, 10'd288};
+        v5 = {10'd327, 10'd263};
+        v6 = {10'd446, 10'd119};
+        v7 = {10'd325, 10'd180};
+        v8 = {10'd309, 10'd354};
+        v9 = {10'd267, 10'd289};
+        v10 = {10'd311, 10'd214};
+        v11 = {10'd277, 10'd228};
+        v12 = {10'd384, 10'd301};
+        v13 = {10'd322, 10'd269};
+        v14 = {10'd372, 10'd226};
+        v15 = {10'd322, 10'd233};
+      end
+      6'd30: begin
+        v0 = {10'd259, 10'd300};
+        v1 = {10'd197, 10'd261};
+        v2 = {10'd283, 10'd32};
+        v3 = {10'd245, 10'd165};
+        v4 = {10'd523, 10'd275};
+        v5 = {10'd335, 10'd255};
+        v6 = {10'd444, 10'd115};
+        v7 = {10'd329, 10'd185};
+        v8 = {10'd297, 10'd368};
+        v9 = {10'd274, 10'd285};
+        v10 = {10'd302, 10'd222};
+        v11 = {10'd285, 10'd233};
+        v12 = {10'd396, 10'd316};
+        v13 = {10'd325, 10'd273};
+        v14 = {10'd377, 10'd229};
+        v15 = {10'd324, 10'd235};
+      end
+      6'd31: begin
+        v0 = {10'd229, 10'd270};
+        v1 = {10'd210, 10'd249};
+        v2 = {10'd270, 10'd50};
+        v3 = {10'd260, 10'd177};
+        v4 = {10'd541, 10'd260};
+        v5 = {10'd343, 10'd247};
+        v6 = {10'd440, 10'd113};
+        v7 = {10'd332, 10'd190};
+        v8 = {10'd283, 10'd381};
+        v9 = {10'd275, 10'd286};
+        v10 = {10'd294, 10'd231};
+        v11 = {10'd288, 10'd237};
+        v12 = {10'd410, 10'd334};
+        v13 = {10'd329, 10'd277};
+        v14 = {10'd382, 10'd234};
+        v15 = {10'd326, 10'd237};
+      end
+      6'd32: begin
+        v0 = {10'd199, 10'd240};
+        v1 = {10'd223, 10'd240};
+        v2 = {10'd266, 10'd83};
+        v3 = {10'd276, 10'd192};
+        v4 = {10'd557, 10'd240};
+        v5 = {10'd351, 10'd240};
+        v6 = {10'd426, 10'd122};
+        v7 = {10'd334, 10'd198};
+        v8 = {10'd266, 10'd396};
+        v9 = {10'd276, 10'd287};
+        v10 = {10'd285, 10'd240};
+        v11 = {10'd292, 10'd240};
+        v12 = {10'd426, 10'd357};
+        v13 = {10'd334, 10'd281};
+        v14 = {10'd387, 10'd240};
+        v15 = {10'd329, 10'd240};
+      end
+      6'd33: begin
+        v0 = {10'd171, 10'd209};
+        v1 = {10'd234, 10'd231};
+        v2 = {10'd259, 10'd98};
+        v3 = {10'd284, 10'd199};
+        v4 = {10'd583, 10'd213};
+        v5 = {10'd359, 10'd232};
+        v6 = {10'd427, 10'd115};
+        v7 = {10'd336, 10'd202};
+        v8 = {10'd239, 10'd429};
+        v9 = {10'd273, 10'd293};
+        v10 = {10'd277, 10'd248};
+        v11 = {10'd295, 10'd242};
+        v12 = {10'd464, 10'd406};
+        v13 = {10'd341, 10'd289};
+        v14 = {10'd395, 10'd247};
+        v15 = {10'd331, 10'd242};
+      end
+      6'd34: begin
+        v0 = {10'd141, 10'd179};
+        v1 = {10'd246, 10'd224};
+        v2 = {10'd252, 10'd111};
+        v3 = {10'd292, 10'd206};
+        v4 = {10'd598, 10'd179};
+        v5 = {10'd367, 10'd224};
+        v6 = {10'd425, 10'd111};
+        v7 = {10'd337, 10'd206};
+        v8 = {10'd211, 10'd447};
+        v9 = {10'd275, 10'd294};
+        v10 = {10'd269, 10'd257};
+        v11 = {10'd299, 10'd244};
+        v12 = {10'd489, 10'd447};
+        v13 = {10'd348, 10'd294};
+        v14 = {10'd399, 10'd257};
+        v15 = {10'd333, 10'd244};
+      end
+      6'd35: begin
+        v0 = {10'd115, 10'd149};
+        v1 = {10'd252, 10'd216};
+        v2 = {10'd249, 10'd125};
+        v3 = {10'd296, 10'd210};
+        v4 = {10'd576, 10'd149};
+        v5 = {10'd374, 10'd216};
+        v6 = {10'd408, 10'd125};
+        v7 = {10'd338, 10'd210};
+        v8 = {10'd180, 10'd464};
+        v9 = {10'd273, 10'd299};
+        v10 = {10'd261, 10'd265};
+        v11 = {10'd300, 10'd246};
+        v12 = {10'd494, 10'd464};
+        v13 = {10'd357, 10'd299};
+        v14 = {10'd393, 10'd265};
+        v15 = {10'd335, 10'd246};
+      end
+      6'd36: begin
+        v0 = {10'd87, 10'd119};
+        v1 = {10'd258, 10'd208};
+        v2 = {10'd244, 10'd137};
+        v3 = {10'd299, 10'd212};
+        v4 = {10'd552, 10'd119};
+        v5 = {10'd381, 10'd208};
+        v6 = {10'd395, 10'd137};
+        v7 = {10'd340, 10'd212};
+        v8 = {10'd143, 10'd479};
+        v9 = {10'd273, 10'd303};
+        v10 = {10'd253, 10'd274};
+        v11 = {10'd302, 10'd249};
+        v12 = {10'd496, 10'd479};
+        v13 = {10'd366, 10'd303};
+        v14 = {10'd386, 10'd274};
+        v15 = {10'd337, 10'd249};
+      end
+      6'd37: begin
+        v0 = {10'd63, 10'd91};
+        v1 = {10'd265, 10'd200};
+        v2 = {10'd242, 10'd149};
+        v3 = {10'd303, 10'd216};
+        v4 = {10'd524, 10'd91};
+        v5 = {10'd387, 10'd200};
+        v6 = {10'd381, 10'd149};
+        v7 = {10'd340, 10'd216};
+        v8 = {10'd100, 10'd479};
+        v9 = {10'd273, 10'd308};
+        v10 = {10'd246, 10'd282};
+        v11 = {10'd304, 10'd251};
+        v12 = {10'd495, 10'd479};
+        v13 = {10'd378, 10'd308};
+        v14 = {10'd378, 10'd282};
+        v15 = {10'd339, 10'd251};
+      end
+      6'd38: begin
+        v0 = {10'd41, 10'd61};
+        v1 = {10'd272, 10'd192};
+        v2 = {10'd240, 10'd160};
+        v3 = {10'd306, 10'd219};
+        v4 = {10'd498, 10'd61};
+        v5 = {10'd393, 10'd192};
+        v6 = {10'd370, 10'd160};
+        v7 = {10'd340, 10'd219};
+        v8 = {10'd41, 10'd479};
+        v9 = {10'd272, 10'd313};
+        v10 = {10'd240, 10'd290};
+        v11 = {10'd306, 10'd253};
+        v12 = {10'd498, 10'd479};
+        v13 = {10'd393, 10'd313};
+        v14 = {10'd370, 10'd290};
+        v15 = {10'd340, 10'd253};
+      end
+      6'd39: begin
+        v0 = {10'd56, 10'd60};
+        v1 = {10'd280, 10'd185};
+        v2 = {10'd244, 10'd175};
+        v3 = {10'd308, 10'd220};
+        v4 = {10'd468, 10'd35};
+        v5 = {10'd405, 10'd181};
+        v6 = {10'd362, 10'd166};
+        v7 = {10'd344, 10'd219};
+        v8 = {10'd56, 10'd464};
+        v9 = {10'd280, 10'd307};
+        v10 = {10'd244, 10'd291};
+        v11 = {10'd308, 10'd255};
+        v12 = {10'd468, 10'd479};
+        v13 = {10'd405, 10'd313};
+        v14 = {10'd362, 10'd298};
+        v15 = {10'd344, 10'd256};
+      end
+      6'd40: begin
+        v0 = {10'd82, 10'd65};
+        v1 = {10'd288, 10'd178};
+        v2 = {10'd252, 10'd190};
+        v3 = {10'd310, 10'd222};
+        v4 = {10'd440, 10'd7};
+        v5 = {10'd416, 10'd169};
+        v6 = {10'd354, 10'd173};
+        v7 = {10'd347, 10'd219};
+        v8 = {10'd82, 10'd414};
+        v9 = {10'd288, 10'd301};
+        v10 = {10'd252, 10'd289};
+        v11 = {10'd310, 10'd257};
+        v12 = {10'd440, 10'd472};
+        v13 = {10'd416, 10'd310};
+        v14 = {10'd354, 10'd306};
+        v15 = {10'd347, 10'd260};
+      end
+      6'd41: begin
+        v0 = {10'd98, 10'd68};
+        v1 = {10'd296, 10'd172};
+        v2 = {10'd257, 10'd201};
+        v3 = {10'd313, 10'd224};
+        v4 = {10'd410, 10'd0};
+        v5 = {10'd429, 10'd155};
+        v6 = {10'd345, 10'd181};
+        v7 = {10'd351, 10'd220};
+        v8 = {10'd98, 10'd376};
+        v9 = {10'd296, 10'd294};
+        v10 = {10'd257, 10'd288};
+        v11 = {10'd313, 10'd259};
+        v12 = {10'd410, 10'd444};
+        v13 = {10'd429, 10'd307};
+        v14 = {10'd345, 10'd313};
+        v15 = {10'd351, 10'd264};
+      end
+      6'd42: begin
+        v0 = {10'd116, 10'd73};
+        v1 = {10'd304, 10'd166};
+        v2 = {10'd262, 10'd209};
+        v3 = {10'd315, 10'd226};
+        v4 = {10'd380, 10'd0};
+        v5 = {10'd442, 10'd139};
+        v6 = {10'd337, 10'd189};
+        v7 = {10'd354, 10'd221};
+        v8 = {10'd116, 10'd346};
+        v9 = {10'd304, 10'd287};
+        v10 = {10'd262, 10'd287};
+        v11 = {10'd315, 10'd260};
+        v12 = {10'd380, 10'd418};
+        v13 = {10'd442, 10'd304};
+        v14 = {10'd337, 10'd319};
+        v15 = {10'd354, 10'd268};
+      end
+      6'd43: begin
+        v0 = {10'd160, 10'd101};
+        v1 = {10'd313, 10'd171};
+        v2 = {10'd267, 10'd217};
+        v3 = {10'd317, 10'd228};
+        v4 = {10'd345, 10'd0};
+        v5 = {10'd449, 10'd127};
+        v6 = {10'd328, 10'd197};
+        v7 = {10'd362, 10'd221};
+        v8 = {10'd134, 10'd319};
+        v9 = {10'd312, 10'd279};
+        v10 = {10'd264, 10'd288};
+        v11 = {10'd317, 10'd263};
+        v12 = {10'd350, 10'd388};
+        v13 = {10'd470, 10'd304};
+        v14 = {10'd329, 10'd330};
+        v15 = {10'd365, 10'd279};
+      end
+      6'd44: begin
+        v0 = {10'd192, 10'd123};
+        v1 = {10'd320, 10'd176};
+        v2 = {10'd272, 10'd223};
+        v3 = {10'd320, 10'd230};
+        v4 = {10'd320, 10'd0};
+        v5 = {10'd447, 10'd123};
+        v6 = {10'd320, 10'd205};
+        v7 = {10'd367, 10'd223};
+        v8 = {10'd152, 10'd297};
+        v9 = {10'd320, 10'd271};
+        v10 = {10'd265, 10'd289};
+        v11 = {10'd320, 10'd267};
+        v12 = {10'd320, 10'd360};
+        v13 = {10'd487, 10'd297};
+        v14 = {10'd320, 10'd342};
+        v15 = {10'd374, 10'd289};
+      end
+      6'd45: begin
+        v0 = {10'd217, 10'd142};
+        v1 = {10'd325, 10'd180};
+        v2 = {10'd277, 10'd228};
+        v3 = {10'd322, 10'd233};
+        v4 = {10'd299, 10'd15};
+        v5 = {10'd446, 10'd119};
+        v6 = {10'd311, 10'd214};
+        v7 = {10'd372, 10'd226};
+        v8 = {10'd169, 10'd279};
+        v9 = {10'd327, 10'd263};
+        v10 = {10'd267, 10'd289};
+        v11 = {10'd322, 10'd269};
+        v12 = {10'd289, 10'd330};
+        v13 = {10'd505, 10'd288};
+        v14 = {10'd309, 10'd354};
+        v15 = {10'd384, 10'd301};
+      end
+      6'd46: begin
+        v0 = {10'd245, 10'd165};
+        v1 = {10'd329, 10'd185};
+        v2 = {10'd285, 10'd233};
+        v3 = {10'd324, 10'd235};
+        v4 = {10'd283, 10'd32};
+        v5 = {10'd444, 10'd115};
+        v6 = {10'd302, 10'd222};
+        v7 = {10'd377, 10'd229};
+        v8 = {10'd197, 10'd261};
+        v9 = {10'd335, 10'd255};
+        v10 = {10'd274, 10'd285};
+        v11 = {10'd325, 10'd273};
+        v12 = {10'd259, 10'd300};
+        v13 = {10'd523, 10'd275};
+        v14 = {10'd297, 10'd368};
+        v15 = {10'd396, 10'd316};
+      end
+      6'd47: begin
+        v0 = {10'd260, 10'd177};
+        v1 = {10'd332, 10'd190};
+        v2 = {10'd288, 10'd237};
+        v3 = {10'd326, 10'd237};
+        v4 = {10'd270, 10'd50};
+        v5 = {10'd440, 10'd113};
+        v6 = {10'd294, 10'd231};
+        v7 = {10'd382, 10'd234};
+        v8 = {10'd210, 10'd249};
+        v9 = {10'd343, 10'd247};
+        v10 = {10'd275, 10'd286};
+        v11 = {10'd329, 10'd277};
+        v12 = {10'd229, 10'd270};
+        v13 = {10'd541, 10'd260};
+        v14 = {10'd283, 10'd381};
+        v15 = {10'd410, 10'd334};
+      end
+      6'd48: begin
+        v0 = {10'd276, 10'd192};
+        v1 = {10'd334, 10'd198};
+        v2 = {10'd292, 10'd240};
+        v3 = {10'd329, 10'd240};
+        v4 = {10'd266, 10'd83};
+        v5 = {10'd426, 10'd122};
+        v6 = {10'd285, 10'd240};
+        v7 = {10'd387, 10'd240};
+        v8 = {10'd223, 10'd240};
+        v9 = {10'd351, 10'd240};
+        v10 = {10'd276, 10'd287};
+        v11 = {10'd334, 10'd281};
+        v12 = {10'd199, 10'd240};
+        v13 = {10'd557, 10'd240};
+        v14 = {10'd266, 10'd396};
+        v15 = {10'd426, 10'd357};
+      end
+      6'd49: begin
+        v0 = {10'd284, 10'd199};
+        v1 = {10'd336, 10'd202};
+        v2 = {10'd295, 10'd242};
+        v3 = {10'd331, 10'd242};
+        v4 = {10'd259, 10'd98};
+        v5 = {10'd427, 10'd115};
+        v6 = {10'd277, 10'd248};
+        v7 = {10'd395, 10'd247};
+        v8 = {10'd234, 10'd231};
+        v9 = {10'd359, 10'd232};
+        v10 = {10'd273, 10'd293};
+        v11 = {10'd341, 10'd289};
+        v12 = {10'd171, 10'd209};
+        v13 = {10'd583, 10'd213};
+        v14 = {10'd239, 10'd429};
+        v15 = {10'd464, 10'd406};
+      end
+      6'd50: begin
+        v0 = {10'd292, 10'd206};
+        v1 = {10'd337, 10'd206};
+        v2 = {10'd299, 10'd244};
+        v3 = {10'd333, 10'd244};
+        v4 = {10'd252, 10'd111};
+        v5 = {10'd425, 10'd111};
+        v6 = {10'd269, 10'd257};
+        v7 = {10'd399, 10'd257};
+        v8 = {10'd246, 10'd224};
+        v9 = {10'd367, 10'd224};
+        v10 = {10'd275, 10'd294};
+        v11 = {10'd348, 10'd294};
+        v12 = {10'd141, 10'd179};
+        v13 = {10'd598, 10'd179};
+        v14 = {10'd211, 10'd447};
+        v15 = {10'd489, 10'd447};
+      end
+      6'd51: begin
+        v0 = {10'd296, 10'd210};
+        v1 = {10'd338, 10'd210};
+        v2 = {10'd300, 10'd246};
+        v3 = {10'd335, 10'd246};
+        v4 = {10'd249, 10'd125};
+        v5 = {10'd408, 10'd125};
+        v6 = {10'd261, 10'd265};
+        v7 = {10'd393, 10'd265};
+        v8 = {10'd252, 10'd216};
+        v9 = {10'd374, 10'd216};
+        v10 = {10'd273, 10'd299};
+        v11 = {10'd357, 10'd299};
+        v12 = {10'd115, 10'd149};
+        v13 = {10'd576, 10'd149};
+        v14 = {10'd180, 10'd464};
+        v15 = {10'd494, 10'd464};
+      end
+      6'd52: begin
+        v0 = {10'd299, 10'd212};
+        v1 = {10'd340, 10'd212};
+        v2 = {10'd302, 10'd249};
+        v3 = {10'd337, 10'd249};
+        v4 = {10'd244, 10'd137};
+        v5 = {10'd395, 10'd137};
+        v6 = {10'd253, 10'd274};
+        v7 = {10'd386, 10'd274};
+        v8 = {10'd258, 10'd208};
+        v9 = {10'd381, 10'd208};
+        v10 = {10'd273, 10'd303};
+        v11 = {10'd366, 10'd303};
+        v12 = {10'd87, 10'd119};
+        v13 = {10'd552, 10'd119};
+        v14 = {10'd143, 10'd479};
+        v15 = {10'd496, 10'd479};
+      end
+      6'd53: begin
+        v0 = {10'd303, 10'd216};
+        v1 = {10'd340, 10'd216};
+        v2 = {10'd304, 10'd251};
+        v3 = {10'd339, 10'd251};
+        v4 = {10'd242, 10'd149};
+        v5 = {10'd381, 10'd149};
+        v6 = {10'd246, 10'd282};
+        v7 = {10'd378, 10'd282};
+        v8 = {10'd265, 10'd200};
+        v9 = {10'd387, 10'd200};
+        v10 = {10'd273, 10'd308};
+        v11 = {10'd378, 10'd308};
+        v12 = {10'd63, 10'd91};
+        v13 = {10'd524, 10'd91};
+        v14 = {10'd100, 10'd479};
+        v15 = {10'd495, 10'd479};
+      end
+      6'd54: begin
+        v0 = {10'd306, 10'd219};
+        v1 = {10'd340, 10'd219};
+        v2 = {10'd306, 10'd253};
+        v3 = {10'd340, 10'd253};
+        v4 = {10'd240, 10'd160};
+        v5 = {10'd370, 10'd160};
+        v6 = {10'd240, 10'd290};
+        v7 = {10'd370, 10'd290};
+        v8 = {10'd272, 10'd192};
+        v9 = {10'd393, 10'd192};
+        v10 = {10'd272, 10'd313};
+        v11 = {10'd393, 10'd313};
+        v12 = {10'd41, 10'd61};
+        v13 = {10'd498, 10'd61};
+        v14 = {10'd41, 10'd479};
+        v15 = {10'd498, 10'd479};
+      end
+      6'd55: begin
+        v0 = {10'd308, 10'd220};
+        v1 = {10'd344, 10'd219};
+        v2 = {10'd308, 10'd255};
+        v3 = {10'd344, 10'd256};
+        v4 = {10'd244, 10'd175};
+        v5 = {10'd362, 10'd166};
+        v6 = {10'd244, 10'd291};
+        v7 = {10'd362, 10'd298};
+        v8 = {10'd280, 10'd185};
+        v9 = {10'd405, 10'd181};
+        v10 = {10'd280, 10'd307};
+        v11 = {10'd405, 10'd313};
+        v12 = {10'd56, 10'd60};
+        v13 = {10'd468, 10'd35};
+        v14 = {10'd56, 10'd464};
+        v15 = {10'd468, 10'd479};
+      end
+      6'd56: begin
+        v0 = {10'd310, 10'd222};
+        v1 = {10'd347, 10'd219};
+        v2 = {10'd310, 10'd257};
+        v3 = {10'd347, 10'd260};
+        v4 = {10'd252, 10'd190};
+        v5 = {10'd354, 10'd173};
+        v6 = {10'd252, 10'd289};
+        v7 = {10'd354, 10'd306};
+        v8 = {10'd288, 10'd178};
+        v9 = {10'd416, 10'd169};
+        v10 = {10'd288, 10'd301};
+        v11 = {10'd416, 10'd310};
+        v12 = {10'd82, 10'd65};
+        v13 = {10'd440, 10'd7};
+        v14 = {10'd82, 10'd414};
+        v15 = {10'd440, 10'd472};
+      end
+      6'd57: begin
+        v0 = {10'd313, 10'd224};
+        v1 = {10'd351, 10'd220};
+        v2 = {10'd313, 10'd259};
+        v3 = {10'd351, 10'd264};
+        v4 = {10'd257, 10'd201};
+        v5 = {10'd345, 10'd181};
+        v6 = {10'd257, 10'd288};
+        v7 = {10'd345, 10'd313};
+        v8 = {10'd296, 10'd172};
+        v9 = {10'd429, 10'd155};
+        v10 = {10'd296, 10'd294};
+        v11 = {10'd429, 10'd307};
+        v12 = {10'd98, 10'd68};
+        v13 = {10'd410, 10'd0};
+        v14 = {10'd98, 10'd376};
+        v15 = {10'd410, 10'd444};
+      end
+      6'd58: begin
+        v0 = {10'd315, 10'd226};
+        v1 = {10'd354, 10'd221};
+        v2 = {10'd315, 10'd260};
+        v3 = {10'd354, 10'd268};
+        v4 = {10'd262, 10'd209};
+        v5 = {10'd337, 10'd189};
+        v6 = {10'd262, 10'd287};
+        v7 = {10'd337, 10'd319};
+        v8 = {10'd304, 10'd166};
+        v9 = {10'd442, 10'd139};
+        v10 = {10'd304, 10'd287};
+        v11 = {10'd442, 10'd304};
+        v12 = {10'd116, 10'd73};
+        v13 = {10'd380, 10'd0};
+        v14 = {10'd116, 10'd346};
+        v15 = {10'd380, 10'd418};
+      end
+      6'd59: begin
+        v0 = {10'd317, 10'd228};
+        v1 = {10'd362, 10'd221};
+        v2 = {10'd317, 10'd263};
+        v3 = {10'd365, 10'd279};
+        v4 = {10'd267, 10'd217};
+        v5 = {10'd328, 10'd197};
+        v6 = {10'd264, 10'd288};
+        v7 = {10'd329, 10'd330};
+        v8 = {10'd313, 10'd171};
+        v9 = {10'd449, 10'd127};
+        v10 = {10'd312, 10'd279};
+        v11 = {10'd470, 10'd304};
+        v12 = {10'd160, 10'd101};
+        v13 = {10'd345, 10'd0};
+        v14 = {10'd134, 10'd319};
+        v15 = {10'd350, 10'd388};
+      end
+      6'd60: begin
+        v0 = {10'd320, 10'd230};
+        v1 = {10'd367, 10'd223};
+        v2 = {10'd320, 10'd267};
+        v3 = {10'd374, 10'd289};
+        v4 = {10'd272, 10'd223};
+        v5 = {10'd320, 10'd205};
+        v6 = {10'd265, 10'd289};
+        v7 = {10'd320, 10'd342};
+        v8 = {10'd320, 10'd176};
+        v9 = {10'd447, 10'd123};
+        v10 = {10'd320, 10'd271};
+        v11 = {10'd487, 10'd297};
+        v12 = {10'd192, 10'd123};
+        v13 = {10'd320, 10'd0};
+        v14 = {10'd152, 10'd297};
+        v15 = {10'd320, 10'd360};
+      end
+      6'd61: begin
+        v0 = {10'd322, 10'd233};
+        v1 = {10'd372, 10'd226};
+        v2 = {10'd322, 10'd269};
+        v3 = {10'd384, 10'd301};
+        v4 = {10'd277, 10'd228};
+        v5 = {10'd311, 10'd214};
+        v6 = {10'd267, 10'd289};
+        v7 = {10'd309, 10'd354};
+        v8 = {10'd325, 10'd180};
+        v9 = {10'd446, 10'd119};
+        v10 = {10'd327, 10'd263};
+        v11 = {10'd505, 10'd288};
+        v12 = {10'd217, 10'd142};
+        v13 = {10'd299, 10'd15};
+        v14 = {10'd169, 10'd279};
+        v15 = {10'd289, 10'd330};
+      end
+      6'd62: begin
+        v0 = {10'd324, 10'd235};
+        v1 = {10'd377, 10'd229};
+        v2 = {10'd325, 10'd273};
+        v3 = {10'd396, 10'd316};
+        v4 = {10'd285, 10'd233};
+        v5 = {10'd302, 10'd222};
+        v6 = {10'd274, 10'd285};
+        v7 = {10'd297, 10'd368};
+        v8 = {10'd329, 10'd185};
+        v9 = {10'd444, 10'd115};
+        v10 = {10'd335, 10'd255};
+        v11 = {10'd523, 10'd275};
+        v12 = {10'd245, 10'd165};
+        v13 = {10'd283, 10'd32};
+        v14 = {10'd197, 10'd261};
+        v15 = {10'd259, 10'd300};
+      end
+      6'd63: begin
+        v0 = {10'd326, 10'd237};
+        v1 = {10'd382, 10'd234};
+        v2 = {10'd329, 10'd277};
+        v3 = {10'd410, 10'd334};
+        v4 = {10'd288, 10'd237};
+        v5 = {10'd294, 10'd231};
+        v6 = {10'd275, 10'd286};
+        v7 = {10'd283, 10'd381};
+        v8 = {10'd332, 10'd190};
+        v9 = {10'd440, 10'd113};
+        v10 = {10'd343, 10'd247};
+        v11 = {10'd541, 10'd260};
+        v12 = {10'd260, 10'd177};
+        v13 = {10'd270, 10'd50};
+        v14 = {10'd210, 10'd249};
+        v15 = {10'd229, 10'd270};
+      end
+      default: begin
+        v0 = 20'd0;
+        v1 = 20'd0;
+        v2 = 20'd0;
+        v3 = 20'd0;
+        v4 = 20'd0;
+        v5 = 20'd0;
+        v6 = 20'd0;
+        v7 = 20'd0;
+        v8 = 20'd0;
+        v9 = 20'd0;
+        v10 = 20'd0;
+        v11 = 20'd0;
+        v12 = 20'd0;
+        v13 = 20'd0;
+        v14 = 20'd0;
+        v15 = 20'd0;
+      end
+    endcase
   end
 
-  // Wires for convenience
-  wire [19:0] v0  = v_reg[0];
-  wire [19:0] v1  = v_reg[1];
-  wire [19:0] v2  = v_reg[2];
-  wire [19:0] v3  = v_reg[3];
-  wire [19:0] v4  = v_reg[4];
-  wire [19:0] v5  = v_reg[5];
-  wire [19:0] v6  = v_reg[6];
-  wire [19:0] v7  = v_reg[7];
-  wire [19:0] v8  = v_reg[8];
-  wire [19:0] v9  = v_reg[9];
-  wire [19:0] v10 = v_reg[10];
-  wire [19:0] v11 = v_reg[11];
-  wire [19:0] v12 = v_reg[12];
-  wire [19:0] v13 = v_reg[13];
-  wire [19:0] v14 = v_reg[14];
-  wire [19:0] v15 = v_reg[15];
-
-  `define VX(v) v[19:10]
-  `define VY(v) v[9:0]
+  // ============================================================
+  // DECODE VERTEX COORDS
+  // ============================================================
+  wire [9:0] v0x  = v0[19:10];
+  wire [9:0] v0y  = v0[9:0];
+  wire [9:0] v1x  = v1[19:10];
+  wire [9:0] v1y  = v1[9:0];
+  wire [9:0] v2x  = v2[19:10];
+  wire [9:0] v2y  = v2[9:0];
+  wire [9:0] v3x  = v3[19:10];
+  wire [9:0] v3y  = v3[9:0];
+  wire [9:0] v4x  = v4[19:10];
+  wire [9:0] v4y  = v4[9:0];
+  wire [9:0] v5x  = v5[19:10];
+  wire [9:0] v5y  = v5[9:0];
+  wire [9:0] v6x  = v6[19:10];
+  wire [9:0] v6y  = v6[9:0];
+  wire [9:0] v7x  = v7[19:10];
+  wire [9:0] v7y  = v7[9:0];
+  wire [9:0] v8x  = v8[19:10];
+  wire [9:0] v8y  = v8[9:0];
+  wire [9:0] v9x  = v9[19:10];
+  wire [9:0] v9y  = v9[9:0];
+  wire [9:0] v10x = v10[19:10];
+  wire [9:0] v10y = v10[9:0];
+  wire [9:0] v11x = v11[19:10];
+  wire [9:0] v11y = v11[9:0];
+  wire [9:0] v12x = v12[19:10];
+  wire [9:0] v12y = v12[9:0];
+  wire [9:0] v13x = v13[19:10];
+  wire [9:0] v13y = v13[9:0];
+  wire [9:0] v14x = v14[19:10];
+  wire [9:0] v14y = v14[9:0];
+  wire [9:0] v15x = v15[19:10];
+  wire [9:0] v15y = v15[9:0];
 
   // ============================================================
-  // VERTEX DOTS ONLY (no edges)
+  // VERTEX HITS FOR CURRENT PIXEL
   // ============================================================
-  wire dot_pix =
-    dot2(pix_x,pix_y, `VX(v0 ),`VY(v0 )) |
-    dot2(pix_x,pix_y, `VX(v1 ),`VY(v1 )) |
-    dot2(pix_x,pix_y, `VX(v2 ),`VY(v2 )) |
-    dot2(pix_x,pix_y, `VX(v3 ),`VY(v3 )) |
-    dot2(pix_x,pix_y, `VX(v4 ),`VY(v4 )) |
-    dot2(pix_x,pix_y, `VX(v5 ),`VY(v5 )) |
-    dot2(pix_x,pix_y, `VX(v6 ),`VY(v6 )) |
-    dot2(pix_x,pix_y, `VX(v7 ),`VY(v7 )) |
-    dot2(pix_x,pix_y, `VX(v8 ),`VY(v8 )) |
-    dot2(pix_x,pix_y, `VX(v9 ),`VY(v9 )) |
-    dot2(pix_x,pix_y, `VX(v10),`VY(v10)) |
-    dot2(pix_x,pix_y, `VX(v11),`VY(v11)) |
-    dot2(pix_x,pix_y, `VX(v12),`VY(v12)) |
-    dot2(pix_x,pix_y, `VX(v13),`VY(v13)) |
-    dot2(pix_x,pix_y, `VX(v14),`VY(v14)) |
-    dot2(pix_x,pix_y, `VX(v15),`VY(v15));
+  wire hit0  = dot2(pix_x, pix_y, v0x,  v0y);
+  wire hit1  = dot2(pix_x, pix_y, v1x,  v1y);
+  wire hit2  = dot2(pix_x, pix_y, v2x,  v2y);
+  wire hit3  = dot2(pix_x, pix_y, v3x,  v3y);
+  wire hit4  = dot2(pix_x, pix_y, v4x,  v4y);
+  wire hit5  = dot2(pix_x, pix_y, v5x,  v5y);
+  wire hit6  = dot2(pix_x, pix_y, v6x,  v6y);
+  wire hit7  = dot2(pix_x, pix_y, v7x,  v7y);
+  wire hit8  = dot2(pix_x, pix_y, v8x,  v8y);
+  wire hit9  = dot2(pix_x, pix_y, v9x,  v9y);
+  wire hit10 = dot2(pix_x, pix_y, v10x, v10y);
+  wire hit11 = dot2(pix_x, pix_y, v11x, v11y);
+  wire hit12 = dot2(pix_x, pix_y, v12x, v12y);
+  wire hit13 = dot2(pix_x, pix_y, v13x, v13y);
+  wire hit14 = dot2(pix_x, pix_y, v14x, v14y);
+  wire hit15 = dot2(pix_x, pix_y, v15x, v15y);
 
-  // Color rules:
-  //   dots        -> white
-  //   background  -> black
-  wire [1:0] R_pix = dot_pix ? 2'b11 : 2'b00;
-  wire [1:0] G_pix = dot_pix ? 2'b11 : 2'b00;
-  wire [1:0] B_pix = dot_pix ? 2'b11 : 2'b00;
+  wire any_vertex =
+      hit0  | hit1  | hit2  | hit3  |
+      hit4  | hit5  | hit6  | hit7  |
+      hit8  | hit9  | hit10 | hit11 |
+      hit12 | hit13 | hit14 | hit15;
 
-  // drive pixel RGB during active video
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      R <= 2'b00; G <= 2'b00; B <= 2'b00;
-    end else if (video_active) begin
-      R <= R_pix;
-      G <= G_pix;
-      B <= B_pix;
-    end else begin
-      R <= 2'b00; G <= 2'b00; B <= 2'b00;
+  // ============================================================
+  // SIMPLE PIXEL SHADER: BLACK BACKGROUND, WHITE VERTICES
+  // ============================================================
+  always @* begin
+    // default: black
+    R = 2'b00;
+    G = 2'b00;
+    B = 2'b00;
+
+    if (video_active && any_vertex) begin
+      R = 2'b11;
+      G = 2'b11;
+      B = 2'b11;
     end
   end
 
 endmodule
-
 
 // ============================================================
 // sin/cos lookup table (64 steps), signed Q1.7
@@ -484,7 +1395,6 @@ module sincos64(
     cos_q = s[ic];
   end
 endmodule
-
 
 // ============================================================
 // 640x480@60Hz style timing generator
