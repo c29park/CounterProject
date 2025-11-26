@@ -783,3 +783,68 @@ module tt_um_vga_example(
   end
 
 endmodule
+
+// ============================================================
+// Simple 640x480@60 Hz VGA sync generator (pixel clock ~25 MHz)
+// ============================================================
+module hvsync_generator (
+    input  wire       clk,
+    input  wire       reset,       // active-high
+    output reg        hsync,
+    output reg        vsync,
+    output wire       display_on,
+    output wire [9:0] hpos,
+    output wire [9:0] vpos
+);
+
+  // Horizontal timings (in pixels)
+  localparam H_VISIBLE     = 640;
+  localparam H_FRONT_PORCH = 16;
+  localparam H_SYNC_PULSE  = 96;
+  localparam H_BACK_PORCH  = 48;
+  localparam H_MAX =
+    H_VISIBLE + H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH - 1; // 799
+
+  // Vertical timings (in lines)
+  localparam V_VISIBLE     = 480;
+  localparam V_FRONT_PORCH = 10;
+  localparam V_SYNC_PULSE  = 2;
+  localparam V_BACK_PORCH  = 33;
+  localparam V_MAX =
+    V_VISIBLE + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH - 1; // 524
+
+  reg [9:0] h_count;
+  reg [9:0] v_count;
+
+  assign hpos       = h_count;
+  assign vpos       = v_count;
+  assign display_on = (h_count < H_VISIBLE) && (v_count < V_VISIBLE);
+
+  // Horizontal / vertical counters
+  always @(posedge clk or posedge reset) begin
+    if (reset) begin
+      h_count <= 10'd0;
+      v_count <= 10'd0;
+    end else begin
+      if (h_count == H_MAX) begin
+        h_count <= 10'd0;
+        if (v_count == V_MAX)
+          v_count <= 10'd0;
+        else
+          v_count <= v_count + 10'd1;
+      end else begin
+        h_count <= h_count + 10'd1;
+      end
+    end
+  end
+
+  // Generate sync pulses (active low)
+  always @* begin
+    hsync = ~((h_count >= H_VISIBLE + H_FRONT_PORCH) &&
+              (h_count <  H_VISIBLE + H_FRONT_PORCH + H_SYNC_PULSE));
+
+    vsync = ~((v_count >= V_VISIBLE + V_FRONT_PORCH) &&
+              (v_count <  V_VISIBLE + V_FRONT_PORCH + V_SYNC_PULSE));
+  end
+
+endmodule
