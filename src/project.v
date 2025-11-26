@@ -40,18 +40,17 @@ module tt_um_vga_example(
   // -------------------------------------------------------
   // Animation Timer
   // -------------------------------------------------------
-  reg [7:0] frame_cnt;
-  reg vsync_prev;
-  
+  reg [15:0] frame_cnt;
+  reg        vsync_prev;
+
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        frame_cnt  <= 8'd0;
-        vsync_prev <= 1'b0;
+      frame_cnt  <= 16'd0;
+      vsync_prev <= 1'b0;
     end else begin
-        vsync_prev <= vsync;
-        if (vsync && !vsync_prev) begin
-            frame_cnt <= frame_cnt + 8'd1;
-        end
+      vsync_prev <= vsync;
+      if (vsync && !vsync_prev)
+        frame_cnt <= frame_cnt + 16'd1;
     end
   end
 
@@ -89,39 +88,49 @@ module tt_um_vga_example(
   localparam HALO_OUT_R2 = 22'd22000;
 
   // -------------------------------------------------------
-  // Text Generation ("UW")
+  // Stars Logic (Asynchronous Twinkle)
+  // Use top bits of coordinates to create 2x2 pixel blocks
+  wire [9:0] star_x = x_px >> 1;
+  wire [9:0] star_y = y_px >> 1;
+
+  // Better pseudo-random hash to break patterns
+  // ((x * large_prime_A) ^ (y * large_prime_B)) * large_prime_C
+  wire [15:0] star_hash = ((star_x * 16'd433) ^ (star_y * 16'd389)) * 16'd251;
+
+  // 1. Position Check: Sparse distribution (~1/32 blocks)
+  wire is_star_pos = (star_hash[15:11] == 5'b11111);
+
+  // 2. Twinkle Check: slowed by dividing frame count by 8
+  wire is_star_on = ((star_hash[7:0] + frame_cnt[10:3]) > 8'd128);
+
+  wire is_star = is_star_pos && is_star_on;
+
   // -------------------------------------------------------
-  // Simple hardcoded shapes for 'U' and 'W'
-  // Position: Top middle. Let's say y from 20 to 52 (32px high).
-  // 'U' width 24, space 8, 'W' width 24. Total width 56.
-  // Start X = 320 - (56/2) = 292.
+  // Text Logic ("UW") - Wait Then Fall
+  // -------------------------------------------------------
+  // Toggle every ~4 seconds using frame_cnt[8]
+  //  - 0: stay at y=20
+  //  - 1: fall downward with frame_cnt[7:0]
+  wire [9:0] text_y_pos = frame_cnt[8] ? (10'd20 + {2'b00, frame_cnt[7:0]})
+                                       : 10'd20;
 
-  // Common Y-box for text
-  wire in_text_y = (y_px >= 10'd20 && y_px < 10'd52);
-  wire [4:0] rel_y = y_px[4:0] - 5'd20; // Relative Y 0-31
+  // Dynamic Y-box for text
+  wire in_text_y = (y_px >= text_y_pos) && (y_px < (text_y_pos + 10'd32));
+  wire [9:0] diff_y = y_px - text_y_pos;
+  wire [4:0] rel_y  = diff_y[4:0];
 
-  // Letter 'U' Logic (X: 292-315)
-  wire in_u_x = (x_px >= 10'd292 && x_px < 10'd316);
-  // Fixed lint warning: 292 % 32 = 4, so we use 5'd4 instead of 5'd292
-  wire [4:0] u_rel_x = x_px[4:0] - 5'd4; // Relative X 0-23
-  // U shape: left bar OR right bar OR bottom bar
-  wire draw_u = in_text_y && in_u_x && (
-                 (u_rel_x < 5'd4) ||                 // Left bar
-                 (u_rel_x >= 5'd20) ||               // Right bar
-                 (rel_y >= 5'd28)                    // Bottom bar
-                 );
+  // Letter 'U' (X: 292-315)
+  wire in_u_x = (x_px >= 10'd292) && (x_px < 10'd316);
+  wire [4:0] u_rel_x = x_px[4:0] - 5'd4;
+  wire draw_u = in_text_y && in_u_x &&
+                ((u_rel_x < 5'd4) || (u_rel_x >= 5'd20) || (rel_y >= 5'd28));
 
-  // Letter 'W' Logic (X: 324-347)
-  wire in_w_x = (x_px >= 10'd324 && x_px < 10'd348);
-  // Fixed lint warning: 324 % 32 = 4, so we use 5'd4 instead of 5'd324
-  wire [4:0] w_rel_x = x_px[4:0] - 5'd4; // Relative X 0-23
-  // W shape: left bar OR right bar OR bottom bar OR middle-bottom bar
-  wire draw_w = in_text_y && in_w_x && (
-                 (w_rel_x < 5'd4) ||                 // Left bar
-                 (w_rel_x >= 5'd20) ||               // Right bar
-                 (rel_y >= 5'd28) ||                 // Bottom bar
-                 ((w_rel_x >= 5'd10 && w_rel_x < 5'd14) && (rel_y >= 5'd16)) // Middle bar (bottom half)
-                 );
+  // Letter 'W' (X: 324-347)
+  wire in_w_x = (x_px >= 10'd324) && (x_px < 10'd348);
+  wire [4:0] w_rel_x = x_px[4:0] - 5'd4;
+  wire draw_w = in_text_y && in_w_x &&
+                ((w_rel_x < 5'd4) || (w_rel_x >= 5'd20) || (rel_y >= 5'd28) ||
+                 ((w_rel_x >= 5'd10) && (w_rel_x < 5'd14) && (rel_y >= 5'd16)));
 
   wire draw_text = draw_u || draw_w;
 
@@ -130,11 +139,11 @@ module tt_um_vga_example(
   // -------------------------------------------------------
   
   // Textures (Ring patterns)
-  wire [7:0] belt_tex_val = (r2_flat[15:8]) - frame_cnt;
+  wire [7:0] belt_tex_val = (r2_flat[15:8]) - frame_cnt[7:0];
   wire belt_gap = belt_tex_val[4];
-  wire belt_yellow = belt_tex_val[2]; 
-  
-  wire [7:0] halo_tex_val = (r2_circ[13:6]) - frame_cnt;
+  wire belt_yellow = belt_tex_val[2];
+
+  wire [7:0] halo_tex_val = (r2_circ[13:6]) - frame_cnt[7:0];
   wire halo_gap = halo_tex_val[4];
   wire halo_yellow = halo_tex_val[2];
 
@@ -152,14 +161,8 @@ module tt_um_vga_example(
 
     if (activevideo) begin
 
-        // PRIORITY 0: Text Overlay ("UW")
-        // Draws on top of everything else.
-        if (draw_text) begin
-            R = 2'b11; G = 2'b11; B = 2'b11; // White Text
-        end
-
         // PRIORITY 1: The Front Belt (Bottom Half)
-        else if (in_belt && belt_is_in_front) begin
+        if (in_belt && belt_is_in_front) begin
             if (belt_gap) begin
                 R = 2'b01; G = 2'b00; B = 2'b00; // Very Dim Red Gap
             end else if (belt_yellow) begin
@@ -172,7 +175,11 @@ module tt_um_vga_example(
         end else if (in_shadow) begin
             R = 2'b00; G = 2'b00; B = 2'b00; // Pure Black
 
-        // PRIORITY 3: The Back Belt (Top Half)
+        // PRIORITY 3: Falling Text ("UW")
+        end else if (draw_text) begin
+            R = 2'b11; G = 2'b11; B = 2'b11; // White Text
+
+        // PRIORITY 4: The Back Belt (Top Half)
         end else if (in_belt) begin
             if (belt_gap) begin
                 R = 2'b01; G = 2'b00; B = 2'b00; // Very Dim Red Gap
@@ -182,7 +189,7 @@ module tt_um_vga_example(
                 R = 2'b11; G = 2'b00; B = 2'b00; // Bright Blood Red
             end
 
-        // PRIORITY 4: The Halo (Lensed Disk)
+        // PRIORITY 5: The Halo (Lensed Disk)
         end else if (in_halo) begin
             if (halo_gap) begin
                 R = 2'b01; G = 2'b00; B = 2'b00; // Very Dim Red Gap
@@ -191,6 +198,10 @@ module tt_um_vga_example(
             end else begin
                 R = 2'b11; G = 2'b00; B = 2'b00; // Bright Blood Red
             end
+        
+        // PRIORITY 6: Background Stars
+        end else if (is_star) begin
+            R = 2'b11; G = 2'b11; B = 2'b11; // White Stars
         end
     end
   end
