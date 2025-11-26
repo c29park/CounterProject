@@ -1,96 +1,83 @@
 import cocotb
 from cocotb.triggers import Timer
 
-CLK_PERIOD_NS = 20  # 50 MHz
+CLK_PERIOD_NS = 40  # 25 MHz pixel clock
+H_TOTAL = 800
+V_TOTAL = 525
+V_DISPLAY = 480
+H_DISPLAY = 640
+H_FRONT_PORCH = 16
+H_SYNC = 96
+H_BACK_PORCH = 48
+V_FRONT_PORCH = 10
+V_SYNC = 2
 
-async def tick(dut, label="", n=1):
+
+async def tick(dut, n=1, *, log=False, label=""):
     for i in range(n):
-        # falling half
         dut.clk.value = 0
         await Timer(CLK_PERIOD_NS // 2, unit="ns")
-        # rising half
         dut.clk.value = 1
         await Timer(CLK_PERIOD_NS // 2, unit="ns")
-        # helpful logs each cycle
-        cocotb.log.info(
-            f"{label} cycle {i+1}: rst_n={int(dut.rst_n.value)} ena={int(dut.ena.value)} "
-            f"ui_in=0x{int(dut.ui_in.value):02X} uio_in=0b{int(dut.uio_in.value):08b} "
-            f"uo_out=0x{int(dut.uo_out.value):02X} uio_out=0x{int(dut.uio_out.value):02X} "
-            f"uio_oe=0x{int(dut.uio_oe.value):02X}"
-        )
+        if log:
+            cocotb.log.info(
+                f"{label} cycle {i+1}: rst_n={int(dut.rst_n.value)} clk={int(dut.clk.value)} "
+                f"hsync={int(dut.uo_out.value[7])} vsync={int(dut.uo_out.value[3])} "
+                f"hpos={int(dut.user_project.hvsync_gen.hpos.value)} vpos={int(dut.user_project.hvsync_gen.vpos.value)}"
+            )
 
-# Backward-compatible alias (the NameError you saw)
+
 clock_ticks = tick
 
+
 async def reset_and_enable(dut):
-    # Safe defaults
-    dut.ena.value    = 1
-    dut.ui_in.value  = 0
+    dut.ena.value = 1
+    dut.ui_in.value = 0
     dut.uio_in.value = 0
-    dut.clk.value    = 0
-    # Assert async reset for two full cycles
-    dut.rst_n.value  = 0
-    await tick(dut, "RESET", 2)
-    # Release reset and wait two cycles
-    dut.rst_n.value  = 1
-    await tick(dut, "POST-RESET", 2)
+    dut.clk.value = 0
+    dut.rst_n.value = 0
+    await tick(dut, 2)
+    dut.rst_n.value = 1
+    await tick(dut, 2)
+
 
 @cocotb.test()
-async def test_counter_core_behaviors(dut):
-    cocotb.log.info("=== BEGIN TEST ===")
+async def test_vga_timing(dut):
+    cocotb.log.info("=== BEGIN VGA TIMING TEST ===")
     await reset_and_enable(dut)
 
-    # After reset (ena=1), outputs should be zeroed and tri-stated
-    assert int(dut.uo_out.value) == 0, "uo_out should be 0 after reset"
-    assert int(dut.uio_oe.value) == 0, "uio_oe should be 0 (tri-stated) after reset"
-    assert int(dut.uio_out.value) == 0, "uio_out forced to 0 when not enabled"
+    hpos = dut.user_project.hvsync_gen.hpos
+    vpos = dut.user_project.hvsync_gen.vpos
+    display_on = dut.user_project.hvsync_gen.display_on
 
-    # ---------- Synchronous LOAD ----------
-    load_val = 0x5A
-    dut.ui_in.value  = load_val
-    dut.uio_in.value = 0b001  # LOAD=1 (uio_in[0])
-    cocotb.log.info("Applying LOAD=1 with ui_in=0x5A")
-    await tick(dut, "LOAD", 1)  # capture on rising edge
-    dut.uio_in.value = 0
-    await tick(dut, "LOAD-DEASSERT", 1)
-    assert int(dut.uo_out.value) == load_val, "LOAD should copy ui_in into counter"
+    assert int(hpos.value) == 0, "hpos should start at 0 after reset"
+    assert int(vpos.value) == 0, "vpos should start at 0 after reset"
+    assert int(display_on.value) == 1, "Display should be active at (0,0)"
+    assert int(dut.uio_out.value) == 0, "uio_out should stay 0"
+    assert int(dut.uio_oe.value) == 0, "uio_oe should stay 0"
 
-    # ---------- Counting ----------
-    dut.uio_in.value = 0b010  # CNT_EN=1 (uio_in[1])
-    cocotb.log.info("Applying CNT_EN=1 for 7 cycles")
-    await tick(dut, "COUNT", 7)
-    dut.uio_in.value = 0
-    expected = (load_val + 7) & 0xFF
-    cocotb.log.info(f"Expecting uo_out == 0x{expected:02X}")
-    assert int(dut.uo_out.value) == expected, "Counter should increment while CNT_EN=1"
+    await tick(dut, H_DISPLAY)
+    assert int(display_on.value) == 0, "Display should go inactive during front porch"
+    await tick(dut, H_FRONT_PORCH)
+    assert int(dut.user_project.hsync.value) == 0, "HSYNC should assert low during sync pulse"
+    await tick(dut, H_SYNC)
+    assert int(dut.user_project.hsync.value) == 1, "HSYNC should deassert after sync pulse"
+    await tick(dut, H_BACK_PORCH)
+    assert int(hpos.value) == 0 and int(vpos.value) == 1, "New line should increment vpos and reset hpos"
 
-    # ---------- Tri-state bus ----------
-    cocotb.log.info("Checking tri-state bus with OE=0")
-    assert int(dut.uio_oe.value) == 0,  "uio_oe must be 0 when OE=0"
-    assert int(dut.uio_out.value) == 0, "uio_out forced 0 when OE=0"
+    # Advance to the start of VSYNC (line 490)
+    lines_to_vsync = (V_DISPLAY + V_FRONT_PORCH) - int(vpos.value)
+    await tick(dut, lines_to_vsync * H_TOTAL)
+    assert int(vpos.value) == V_DISPLAY + V_FRONT_PORCH, "vpos should reach the VSYNC line"
+    assert int(dut.user_project.vsync.value) == 0, "VSYNC should assert low during vertical sync"
 
-    dut.uio_in.value = 0b100  # OE=1
-    cocotb.log.info("Enabling OE=1 to mirror on uio_out")
-    await tick(dut, "OE-ON", 1)
-    assert int(dut.uio_oe.value) == 0xFF, "uio_oe should enable all bits when OE=1"
-    assert int(dut.uio_out.value) == expected, "uio_out should mirror counter when OE=1"
+    await tick(dut, V_SYNC * H_TOTAL)
+    assert int(dut.user_project.vsync.value) == 1, "VSYNC should deassert after pulse"
+    assert int(vpos.value) == V_DISPLAY + V_FRONT_PORCH + V_SYNC, "vpos should advance past VSYNC window"
 
-    # ---------- Disable fabric (ena=0): counter holds internally; outputs masked ----------
-    dut.ena.value    = 0
-    prev = int(dut.uo_out.value)  # capture the visible value before masking
-    dut.uio_in.value = 0b010      # try to count; should have no effect while ena=0
-    await tick(dut, "ENA=0", 3)
+    # Complete the frame and ensure counters wrap
+    remaining_lines = V_TOTAL - int(vpos.value)
+    await tick(dut, remaining_lines * H_TOTAL)
+    assert int(hpos.value) == 0 and int(vpos.value) == 0, "Positions should wrap at end of frame"
 
-    # Outputs must be masked while ena=0
-    assert int(dut.uo_out.value) == 0, "uo_out must be 0 when ena=0 (outputs masked)"
-    assert int(dut.uio_oe.value) == 0, "uio_oe must be 0 when ena=0"
-    assert int(dut.uio_out.value) == 0, "uio_out forced 0 when ena=0"
-
-    # Re-enable and ensure counting resumes from the held internal value
-    dut.ena.value    = 1
-    dut.uio_in.value = 0b010  # CNT_EN=1
-    await tick(dut, "RESUME", 2)
-    dut.uio_in.value = 0
-    assert int(dut.uo_out.value) == ((prev + 2) & 0xFF), "Counting should resume when ena=1"
-
-    cocotb.log.info("=== END TEST (PASS) ===")
+    cocotb.log.info("=== END VGA TIMING TEST (PASS) ===")
