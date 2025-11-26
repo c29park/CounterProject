@@ -74,6 +74,48 @@ module tt_um_vga_example(
     end
   endfunction
 
+  // ============================================================
+  // 8×8 FONT FOR "U" AND "W" (bitmapped, scaled ×4)
+  // bit 7 = leftmost pixel, bit 0 = rightmost
+  // ============================================================
+  function uw_font_U;
+    input [2:0] cx;  // 0..7
+    input [2:0] cy;  // 0..7
+    reg   [7:0] row;
+    begin
+      case (cy)
+        3'd0: row = 8'b1000_0001;
+        3'd1: row = 8'b1000_0001;
+        3'd2: row = 8'b1000_0001;
+        3'd3: row = 8'b1000_0001;
+        3'd4: row = 8'b1000_0001;
+        3'd5: row = 8'b1000_0001;
+        3'd6: row = 8'b0111_1110;
+        default: row = 8'b0000_0000;
+      endcase
+      uw_font_U = row[7 - cx];
+    end
+  endfunction
+
+  function uw_font_W;
+    input [2:0] cx;  // 0..7
+    input [2:0] cy;  // 0..7
+    reg   [7:0] row;
+    begin
+      case (cy)
+        3'd0: row = 8'b1000_0001; // outer legs at top
+        3'd1: row = 8'b1000_0001;
+        3'd2: row = 8'b1000_0001;
+        3'd3: row = 8'b1000_0001;
+        3'd4: row = 8'b1001_1001; // inner starts
+        3'd5: row = 8'b1010_0101; // diagonals inwards
+        3'd6: row = 8'b1100_0011; // bottom peaks
+        default: row = 8'b0000_0000;
+      endcase
+      uw_font_W = row[7 - cx];
+    end
+  endfunction
+
   // tiny diamond point (~3px manhattan radius)
   function dot2;
     input [9:0] px, py;
@@ -479,7 +521,46 @@ module tt_um_vga_example(
       hit12 | hit13 | hit14 | hit15;
 
   // ============================================================
-  // SIMPLE PIXEL SHADER: BLACK BACKGROUND, WHITE VERTICES
+  // "UW" overlay in top-middle region (pixel-art font, ×4 scale)
+  // ------------------------------------------------------------
+  // Region:
+  //   - y: 40..71  (height 32 px)
+  //   - x: 280..359 (width 80 px)
+  //
+  // Layout:
+  //   U: x = 280..311 (32 px, from font 8×8 scaled by 4)
+  //   gap: 312..327
+  //   W: x = 328..359 (32 px)
+  // ============================================================
+  wire uw_region_y = (pix_y >= 10'd40) && (pix_y < 10'd72);
+
+  wire [9:0] uw_y_local = pix_y - 10'd40;   // 0..31
+  wire [2:0] uw_char_y  = uw_y_local[4:2];  // /4 -> 0..7
+
+  // --- U side ---
+  wire uw_U_x_region = (pix_x >= 10'd280) && (pix_x < 10'd312);
+  wire [9:0] U_x_local = pix_x - 10'd280;   // 0..31 when in region
+  wire [2:0] U_char_x  = U_x_local[4:2];    // /4 -> 0..7
+
+  wire uw_pixel_U =
+      uw_region_y &&
+      uw_U_x_region &&
+      uw_font_U(U_char_x, uw_char_y);
+
+  // --- W side ---
+  wire uw_W_x_region = (pix_x >= 10'd328) && (pix_x < 10'd360);
+  wire [9:0] W_x_local = pix_x - 10'd328;   // 0..31 when in region
+  wire [2:0] W_char_x  = W_x_local[4:2];    // /4 -> 0..7
+
+  wire uw_pixel_W =
+      uw_region_y &&
+      uw_W_x_region &&
+      uw_font_W(W_char_x, uw_char_y);
+
+  wire uw_pixel = uw_pixel_U | uw_pixel_W;
+
+  // ============================================================
+  // SIMPLE PIXEL SHADER: BLACK BACKGROUND, WHITE VERTICES + "UW"
   // ============================================================
   always @* begin
     // default: black
@@ -487,7 +568,7 @@ module tt_um_vga_example(
     G = 2'b00;
     B = 2'b00;
 
-    if (video_active && any_vertex) begin
+    if (video_active && (any_vertex || uw_pixel)) begin
       R = 2'b11;
       G = 2'b11;
       B = 2'b11;
